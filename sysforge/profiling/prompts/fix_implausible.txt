@@ -1,0 +1,44 @@
+The previous probe for target `{target}` compiled and ran, but its result was rejected.
+
+================================================================================
+CRITICAL rejection reason you MUST address in your fix:
+  {reason}
+================================================================================
+
+reported value  = {value} {unit}
+plausible range = [{plausible_min}, {plausible_max}] {unit}
+
+history of prior rejected attempts for this target (oldest -> newest):
+{history}
+
+If the history shows the value keeps converging to the same (wrong) region, your previous
+strategy has a systematic bias. Change the strategy, not just its parameters:
+- For latency probes that keep hitting L2/L1 residency, increase the working set by
+  at least 4x AND verify device-side that the working set exceeds any plausible L2 size
+  (e.g. >= 2 GiB), then re-randomize the permutation.
+- For bandwidth probes stuck below peak, increase block/warp occupancy, use float4
+  vectorized loads/stores, and unroll >=8x so the compiler can't serialize memory ops.
+- For clock probes stuck at an odd number, check the unit conversion (cycles, MHz, s)
+  and make sure both the device-side cycles AND host-side elapsed-seconds come from the
+  SAME kernel launch.
+
+=== stdout (tail) ===
+{stdout}
+
+=== previous source ===
+{source}
+
+Typical contamination causes: ILP hiding latency, cache-resident working set for a DRAM
+probe, compiler-optimized-away loop body, timing includes allocation, wrong unit
+conversion, or using cudaGetDeviceProperties as the answer.
+
+Produce a corrected source that isolates the physical quantity and prints a value inside
+the plausible range when run on real hardware. Change the measurement strategy if needed.
+
+Return a JSON object with this exact schema and nothing else:
+{{
+  "source": "<complete CUDA .cu source>",
+  "args": ["<optional args>"],
+  "parse_hint": "<parse instruction>",
+  "rationale": "<why prior value was wrong and how the new probe fixes it>"
+}}

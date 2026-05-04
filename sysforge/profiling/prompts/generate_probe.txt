@@ -1,0 +1,177 @@
+TASK: Generate a CUDA micro-benchmark that measures the hardware intrinsic:
+
+  target        = {target}
+  category      = {category}
+  unit          = {unit}
+  strategy hint = {strategy}
+  plausible range for the final value: [{plausible_min}, {plausible_max}] {unit}
+
+  description: {description}
+
+Runtime budget for the compiled binary: **{run_timeout_s} seconds total**. A launch that
+exceeds this will be killed and the result discarded. Size your workload so the full
+program (including warmup, {num_trials}+ samples, reductions, and prints) finishes in
+<= {run_timeout_s_safe} seconds.
+
+Weak environmental hints (do NOT trust, especially the spec-like fields):
+{hints}
+
+Design requirements:
+- The kernel must isolate the physical quantity being measured.
+
+- Latency probes (L1 / L2 / DRAM pointer-chase):
+    * Use a dependent pointer chain: each load's address is the value of the previous load.
+    * The stride between consecutive chain nodes MUST be >= 128 bytes (one L1 cache line
+      on NVIDIA GPUs) AND the node order MUST be a random permutation, so neither a
+      stride prefetcher nor a stream prefetcher can learn the sequence.
+    * The CHAIN LENGTH (number of distinct nodes before the loop repeats) is what
+      determines cache residency, not the allocation size. A 2 GiB buffer with only
+      2048 chain nodes will measure L1 latency. For DRAM latency you need >= 1 million
+      distinct chain nodes spaced >= 128 B apart; for L2 latency, size the chain to
+      just exceed L1 but fit in L2 (e.g. 256 KB of nodes).
+    * CONCRETE: store the chain as `uint32_t* chain;` where `chain[i]` holds the INDEX
+      of the next node, and each index step advances by at least 32 uint32_t elements
+      (128 bytes). The RESULT line MUST include `stride_bytes=<N>` with N >= 128 AND
+      `chain_len=<M>` with M large enough for the target level; if either is missing
+      or out of range, the probe is invalid.
+    * Size the working set so it SAFELY exceeds the target level:
+        L1:  small (a few KB), fits in L1 (stride 128 B is still required).
+        L2:  larger than per-SM L1 total but smaller than expected L2 (sweep from
+             128 KB up to ~1 MB and detect the L1-miss plateau).
+        DRAM: at least 4x a reasonable upper bound for L2 (e.g. >= 128 MB) to make
+             L2 misses essentially guaranteed.
+    * Build the permutation on the HOST (std::* is host-only) and cudaMemcpy it over.
+    * Run many unrolled chase iterations per trial (e.g. 1024-8192) and take the median
+      cycles-per-load across >=32 trials. Use clock64() deltas inside the kernel and
+      divide by iteration count; do NOT use cudaEvent for per-load latency.
+
+- Bandwidth probes (shared / global peak):
+    * Saturate with many resident blocks (>= 4x SM count) and vectorized float4 loads/stores.
+    * Unroll the inner copy/triad loop >= 8x so the compiler cannot serialize memory ops
+      into a few issue slots. Mark the destination with a non-trivial reduction (e.g.
+      XOR of loaded values stored to a single global scalar) so dead-code elimination
+      cannot remove the loads.
+    * For SHARED memory: each block must operate on its OWN __shared__ array
+      (<= 96 KiB statically or up to the max-dynamic-shmem limit). A working_set larger
+      than ~100 KB means you are NOT measuring shared-memory bandwidth, you are
+      measuring global memory. Each thread should issue >= 4096 shmem loads per trial;
+      the total bytes transferred = blocks * threads_per_block * loads_per_thread *
+      bytes_per_load. A reasonable peak on modern GPUs is 10-20 TB/s aggregate across
+      all SMs. Anything under ~3 TB/s is almost certainly limited by your unrolling or
+      by accidentally touching global memory.
+    * For GLOBAL memory: use a working set >= 1 GiB so you actually exercise DRAM, not
+      L2. Aim for >=80% of theoretical peak; < 50% indicates missed vectorization or
+      insufficient parallelism. Each thread must issue 64-256 float4 loads from its own
+      contiguous stripe; the RESULT line MUST include `loads_per_thread=<N>` with
+      64 <= N <= 1024, or the probe is invalid. (A value like 51200 means you are
+      revisiting the working set many times, which hits L2; and it also breaks the
+      bytes-transferred accounting below.)
+    * Each warp of 32 threads must read 32 DIFFERENT 128-byte cache lines per
+      iteration (coalesced): e.g. `float4 v = in[block_base + iter * blockDim.x + tid];`.
+      Do NOT have all lanes in a warp read adjacent floats (scalar) that fall into
+      one cache line — that forces 32x traffic amplification.
+    * Bandwidth formula (SINGLE read per element): bytes = (unique_elements_touched)
+      * sizeof(element); GB/s = bytes / elapsed_seconds / 1e9. If you revisit elements
+      multiple times (loads_per_thread * threads > working_set/sizeof), subtract the
+      revisits — or just size the workload so each element is read exactly ONCE per
+      timed kernel and count bytes = working_set_bytes.
+    * Time only the steady-state phase with cudaEvent; run enough work that the kernel
+      takes >= 5 ms so event resolution is negligible.
+
+- Capacity probes (l2_cache_capacity_kb, max_shmem_per_block_kb):
+    * Sweep the parameter monotonically and report the FULL sweep as extra fields and
+      the inferred single-point answer.
+    * For each sweep point you must time the INNER pointer-chase loop with clock64()
+      and divide by the number of dependent loads executed — i.e. report cycles PER
+      LOAD, not total-kernel cycles. If you time total work instead, cycles-per-load
+      will FALL at large sizes (because total work dilutes across more threads) and
+      the cliff will be inverted. Output `sweep_med_cpl=a,b,c,...` paired with
+      `sweep_kb=A,B,C,...` so the two lists are index-aligned.
+    * The reported cycles-per-load sequence must monotonically non-decrease across
+      the cliff; if values later in the sweep are LOWER than values before the cliff,
+      your measurement is wrong.
+    * The sweep MUST pass THROUGH the cliff, not end at it. If the reported answer equals
+      sweep_max, the sweep is too narrow and the probe is invalid. For L2 on modern
+      GPUs, sweep at least 64 KB ... 256 MB (doubling each step). For the answer to be
+      trustworthy, the last 2-3 sweep points above the answer must show DRAM-level
+      latency (>= 400 cyc) and the last 2-3 below must show L2-level latency
+      (~180-280 cyc).
+    * Detect the cliff as the smallest index i where sweep_med_cpl[i+1] >
+      1.5 * median(sweep_med_cpl[0..i]). The reported capacity MUST be the GEOMETRIC
+      MIDPOINT of the cliff step: answer = sqrt(sweep_kb[i] * sweep_kb[i+1]).
+      Example: if sweep_kb=[...,4096,8192,...] and the jump is between indices i and
+      i+1, report sqrt(4096*8192) ~= 5793 KB, NOT 4096 and NOT 8192 — the true
+      boundary lives somewhere inside that step.
+    * For max_shmem_per_block_kb, try successive kernel launches with increasing
+      __dynamic__ shared memory via cudaFuncSetAttribute(...,
+      cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) and find the largest
+      configuration whose launch succeeds.
+
+- Bank-conflict probe (bank_conflict_penalty_cycles):
+    * NVIDIA GPUs have 32 shared-memory banks of 4 bytes each. Two accesses conflict
+      iff their addresses fall in the same bank (i.e. (addr/4) mod 32 is equal).
+    * A stride of 2 over 4B elements produces NO conflicts (each thread hits a distinct
+      even bank). Useless. A stride of 128 BYTES over 4B elements ALSO produces no
+      conflicts (128/4 = 32, which distributes threads evenly across all 32 banks).
+    * To force an N-way conflict, have all 32 threads in the warp access the SAME bank.
+      Concrete patterns (using `uint32_t smem[...]`, element stride K measured in 4B
+      uints):
+        - 32-way conflict (worst case): each lane reads smem[(tid & 31) * 32 + iter]
+          which keeps all 32 lanes on bank 0 across the whole warp.
+        - 2-way conflict: `reinterpret_cast<double*>(smem)[tid]`.
+    * SIZING: the smem array must be larger than the maximum index any thread
+      computes. If each thread can access smem[tid * K + MAX_ITER], the array must
+      hold at least (threads_per_block * K + MAX_ITER) uints. A common bug is sizing
+      the array at 32*K (assuming only a single warp) when you actually have
+      threads_per_block=128-256. Launch with a single warp (threads_per_block=32) to
+      eliminate this class of indexing bug entirely.
+    * TIMING: measure inside the kernel with clock64() BRACKETING THE INNER LOOP on
+      a single warp, and report cycles_per_access = (clock_end - clock_start) /
+      loads_per_thread. Do NOT divide wallclock_ms by (blocks*threads*iters) — that
+      averages across lanes and washes out per-warp conflict effects (every lane
+      appears to do 1 cycle/load because the wallclock is dominated by the slowest
+      lane, not the conflict penalty). One block, one warp is enough.
+    * The RESULT line MUST report the delta as a nonzero integer (>= 2 cycles) when
+      using a real N-way conflict pattern. A reported delta below 2 cycles means the
+      "conflicting" kernel isn't actually conflicting; the probe is invalid. Include
+      `conflict_stride=<elem_stride>` so sanity can verify.
+    * Insert `__syncwarp()` between any shared-memory write and the following read
+      so the compiler cannot hoist or forward the value through registers.
+
+- Clock probes (actual_boost_clock_mhz):
+    * Compute from clock64() deltas around a known-length, purely register-level integer
+      dependency chain, NOT from FLOP/s divided by an assumed per-SM throughput constant.
+    * Specifically: MHz = (cycles_elapsed / elapsed_seconds) / 1e6, where cycles_elapsed
+      comes from clock64() on-device and elapsed_seconds comes from cudaEvent on-host,
+      both measuring the SAME kernel invocation.
+    * Sustain the load for >= 50 ms so the clock has time to boost to steady state; drop
+      the first few samples as a warmup.
+
+- Topology probes (sm_count):
+    * Do NOT report cudaDeviceProp::multiProcessorCount, gridDim.x, number of blocks
+      launched, or any host-configured constant as the answer.
+    * Launch MANY more blocks than the expected SM count (e.g. 4096). Each block reads
+      its own %smid via inline PTX ("mov.u32 %0, %%smid;") ONCE at entry, and
+      atomically sets a bit in a host-allocated uint32_t[8] bitmap (indexed by smid/32,
+      bit smid%32). After cudaDeviceSynchronize, copy the bitmap back and count the
+      set bits — that is the measured distinct-SM count.
+    * Repeat the whole experiment >=8 times and take the MAX (SMs can be idle on a given
+      run; more runs only ever reveal more SMs, never fewer).
+    * Print a "distinct_smid_count=<N>" alongside the RESULT so validation can compare.
+
+- Bank-conflict probe:
+    * Measure the latency DELTA between a kernel that issues only conflict-free shared
+      loads and one that issues N-way conflicting loads of otherwise identical shape.
+
+Always:
+- Loop the measurement >= 32 times and report median + min + max + sample count.
+- Print EXACTLY ONE final line:
+  RESULT {target}=<number> unit={unit} [extra_key=extra_value ...]
+
+Return a JSON object with this exact schema and nothing else:
+{{
+  "source": "<complete CUDA .cu source as a single string>",
+  "args": ["<optional command-line args to pass to the compiled binary>"],
+  "parse_hint": "<short instruction on how to parse stdout into the numeric value>",
+  "rationale": "<2-4 sentence explanation of why this probe measures the target faithfully>"
+}}

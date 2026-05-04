@@ -1,0 +1,38 @@
+The previous CUDA source for target `{target}` failed to compile with nvcc.
+
+=== nvcc command ===
+{cmd}
+
+=== nvcc stdout ===
+{stdout}
+
+=== nvcc stderr ===
+{stderr}
+
+=== previous source ===
+{source}
+
+history of compile errors so far (oldest -> newest):
+{history}
+
+If the same error keeps appearing, you must STRUCTURALLY change the code, not just tweak:
+- "calling a __host__ function from a __global__/__device__ function": the callee is
+  host-only. Make TWO separate functions with different qualifiers: e.g. `lcg_host()`
+  used only in `main`/host helpers, and `__device__ lcg_dev()` used only in kernels.
+  Never call std::vector / std::swap / std::sort / std::min / std::max from device.
+- "calling a __device__ function from a __host__ function": same remedy in reverse.
+- If an identifier is reported undefined in device code, either it is a libstdc++ symbol
+  (illegal on device) or needs `__device__` / `__host__ __device__` qualifier; do not
+  just delete the call.
+
+Produce a corrected complete CUDA source that compiles. Do not change the measurement
+strategy unless the compile error proves the strategy is unrealizable. Keep the final
+`RESULT {target}=...` print format.
+
+Return a JSON object with this exact schema and nothing else:
+{{
+  "source": "<complete CUDA .cu source>",
+  "args": ["<optional args>"],
+  "parse_hint": "<parse instruction>",
+  "rationale": "<what was wrong and how you fixed it>"
+}}

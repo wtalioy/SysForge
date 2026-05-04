@@ -1,0 +1,12 @@
+Generate a complete CUDA (.cu) program implementing a single-precision GEMM
+(C = A * B, row-major, square NxN with N around 2048) suitable for Nsight Compute profiling.
+
+Requirements:
+- Self-contained, compiles with `nvcc -O3 -std=c++17 -lineinfo`.
+- Only standard headers (<cuda_runtime.h>, <cstdio>, <cstdlib>).
+- DO NOT include <cuda/wmma.hpp>.
+- Use a tiled shared-memory kernel (tile 32x32 or 16x16).
+- Warm up one launch, then run the measured launch exactly once so ncu captures it cleanly.
+- Print a brief "GEMM done N=... time_ms=..." line and exit 0.
+
+Return ONLY the raw CUDA source (no markdown fences, no commentary).

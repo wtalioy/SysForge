@@ -1,0 +1,19 @@
+Extract the numeric answer for target `{target}` (unit: {unit}) from this probe stdout.
+
+The probe was designed to print a single line of the form:
+  RESULT {target}=<number> unit={unit} [extra_key=extra_value ...]
+
+Parsing hint from the probe author:
+{parse_hint}
+
+=== stdout ===
+{stdout}
+
+Return a JSON object, and nothing else:
+{{
+  "value": <number or null>,
+  "unit": "{unit}",
+  "confidence": <float in 0..1>,
+  "reasoning": "<one sentence explanation referencing specific stdout lines>"
+}}
+If no plausible value can be extracted, return value: null and explain why.

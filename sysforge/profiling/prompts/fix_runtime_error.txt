@@ -1,0 +1,35 @@
+The previous probe for target `{target}` compiled but failed at runtime.
+
+exit code   = {rc}
+wallclock s = {wallclock_s}
+timed_out   = {timed_out}
+
+=== stdout (tail) ===
+{stdout}
+
+=== stderr (tail) ===
+{stderr}
+
+=== previous source ===
+{source}
+
+history of runtime errors so far (oldest -> newest):
+{history}
+
+If the same error keeps appearing, change the approach structurally. Typical causes:
+unchecked CUDA error (illegal memory access, invalid configuration), kernel launched
+with 0 blocks/threads, undersized/oversized working set, uninitialized memory in
+pointer-chase (unvisited nodes point at garbage), infinite loop, missing
+cudaDeviceSynchronize, running past device timeout, verify_cycle failing because the
+permutation is not a single Hamiltonian cycle.
+
+Produce a corrected source that runs to completion and prints the final
+`RESULT {target}=...` line. Add cudaDeviceSynchronize and error checks if missing.
+
+Return a JSON object with this exact schema and nothing else:
+{{
+  "source": "<complete CUDA .cu source>",
+  "args": ["<optional args>"],
+  "parse_hint": "<parse instruction>",
+  "rationale": "<what failed and how you fixed it>"
+}}
