@@ -1,0 +1,61 @@
+Repair this candidate family after a failed concrete attempt.
+
+Environment summary:
+{env_summary}
+
+Family name: {family_name}
+Family rationale: {family_rationale}
+Parameter values: {parameter_values}
+Failure stage: {failure_stage}
+Failure summary:
+{failure_summary}
+
+Current family source template:
+{source_template}
+
+Current family parameters:
+{family_parameters}
+
+Failed concrete candidate source:
+{candidate_source}
+
+Validator feedback from local checks:
+{validator_feedback}
+
+Rules:
+- Return a repaired full source template, not prose.
+- Keep the family runnable as a self-contained `.cu` extension.
+- Preserve the interface `forward(W, X, A, B)`.
+- By default, keep using a forward-body template. Use a full `.cu` file only if you genuinely need custom helpers or custom CUDA kernels that cannot fit as a plain body.
+- A forward-body template must contain plain statements only. Do not include `#include`, `namespace`, `using namespace`, `TORCH_LIBRARY`, or any other top-level/module-registration constructs unless you are returning the full `.cu` file with `PYBIND11_MODULE`.
+- You may narrow or simplify parameters if the failure came from unsafe parameter regions.
+- If the family is really choosing between a few concrete implementation bodies, prefer a `{{FORWARD_BODY}}`-style template with body-valued parameters over decorative numeric placeholders.
+- Unless a numeric value directly changes emitted code in a meaningful way, do not invent knobs like `BLOCK_X` or `TILE_SIZE`. Prefer `FORWARD_BODY` with concrete repaired bodies.
+- Never use `...`, pseudocode, hook-registration examples, or incomplete signatures. Every returned line must be real compilable C++/CUDA for this exact extension interface.
+- If possible, preserve the family idea and fix the bug directly.
+- Prefer repairing by simplifying toward the known-safe baseline/incumbent structure rather than inventing a larger custom kernel.
+- Every remaining parameter must still change the rendered source or a real API/algorithm choice; remove decorative parameters.
+- Use only `{{PARAM_NAME}}` placeholders for tunable parameters; never emit `{PARAM_NAME}`.
+- If the original approach is fundamentally unsound, simplify toward correct vendor-backed or ATen-backed code rather than repeating the same kernel shape.
+- When repairing compile or correctness failures, prefer a smaller vendor-backed design that compiles cleanly over a larger custom kernel that is still speculative.
+- `torch::addmm(input, mat1, mat2, beta, alpha)` takes one input tensor plus two matrices. Do not emit invalid signatures like `torch::addmm(W, W, X, low_rank, ...)`.
+- Use the failure summary and candidate source directly. If the failure is API misuse or malformed full-source structure, repair toward a plain valid forward-body implementation first.
+
+Return only JSON:
+{
+  "family_name": "short_family_name",
+  "rationale": "why the repaired family should behave better",
+  "expected_bottleneck": "launch_bound|memory_bound|compute_bound|mixed",
+  "source_template": "{{FORWARD_BODY}}",
+  "parameters": [
+    {
+      "name": "FORWARD_BODY",
+      "values": [
+        "auto bt = B.transpose(0, 1).contiguous(); auto tmp = torch::matmul(bt, X); auto out = torch::empty({W.size(0), X.size(1)}, W.options()); out.copy_(torch::matmul(W, X)); out.addmm_(A, tmp, 1.0, 1.0); return out;",
+        "auto bt = B.transpose(0, 1).contiguous(); auto low_rank = torch::matmul(A, torch::matmul(bt, X)); auto out = torch::matmul(W, X); out.add_(low_rank); return out;"
+      ],
+      "default": "auto bt = B.transpose(0, 1).contiguous(); auto tmp = torch::matmul(bt, X); auto out = torch::empty({W.size(0), X.size(1)}, W.options()); out.copy_(torch::matmul(W, X)); out.addmm_(A, tmp, 1.0, 1.0); return out;",
+      "description": "concrete repaired forward-body alternative"
+    }
+  ]
+}

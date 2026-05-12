@@ -35,3 +35,12 @@ class Workspace:
         with path.open("a") as handle:
             handle.write(content + "\n")
         return path
+
+    def candidate_source_path(self, source_hash: str) -> Path:
+        return self.probes_dir / f"candidate_{safe_name(source_hash)}.cu"
+
+    def candidate_build_dir(self, source_hash: str) -> Path:
+        return self.build_dir / f"candidate_{safe_name(source_hash)}"
+
+    def candidate_log_path(self, source_hash: str) -> Path:
+        return self.logs_dir / f"candidate_{safe_name(source_hash)}.log"

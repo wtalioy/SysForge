@@ -1,5 +1,5 @@
-from sysforge.profiling.targets import CATALOG
-from sysforge.profiling.validation import (
+from sysforge.workflows.profiling.targets import CATALOG
+from sysforge.workflows.profiling.validation import (
     check_plausible_range,
     extract_result_line,
     extract_unit_from_result,

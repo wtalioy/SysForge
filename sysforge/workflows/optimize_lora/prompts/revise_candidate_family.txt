@@ -1,0 +1,85 @@
+Revise this LoRA CUDA family using measured search results.
+
+Current family name: {family_name}
+Current family rationale: {family_rationale}
+Previously tried family names: {tried_family_names}
+Recent concrete forward bodies already tried:
+{recent_body_history}
+Recent execution-plan summary:
+{recent_plan_summary}
+
+Environment summary:
+{env_summary}
+
+Current family source template:
+{source_template}
+
+Current family parameters:
+{family_parameters}
+Current family concrete variants:
+{family_concrete_variants}
+
+Current incumbent forward body:
+{incumbent_source}
+
+Measured round feedback JSON:
+{round_feedback}
+
+Validator feedback from local checks:
+{validator_feedback}
+
+Rules:
+- Return one improved family, not multiple alternatives.
+- Keep the source as a self-contained `.cu` extension with `forward(W, X, A, B)`.
+- By default, keep using a forward-body template. Use a full `.cu` file only if you genuinely need custom helpers or custom CUDA kernels that cannot fit as a plain body.
+- A forward-body template must contain plain statements only. Do not include `#include`, `namespace`, `using namespace`, `TORCH_LIBRARY`, or any other top-level/module-registration constructs unless you are returning the full `.cu` file with `PYBIND11_MODULE`.
+- You may revise both the implementation and the parameter schema.
+- If the family is really comparing a few concrete implementation bodies, prefer a `{{FORWARD_BODY}}`-style template with either `concrete_variants` or multiple body values over decorative numeric placeholders.
+- Unless a numeric value directly changes emitted code in a meaningful way, do not invent knobs like `BLOCK_X` or `TILE_SIZE`. Prefer `FORWARD_BODY` with concrete revised bodies.
+- If you already know the exact few revised candidates you want tested, prefer `concrete_variants` so SysForge evaluates that curated set directly instead of truncating a local Cartesian expansion.
+- Never use `...`, pseudocode, hook-registration examples, or incomplete signatures. Every returned line must be real compilable C++/CUDA for this exact extension interface.
+- Prefer editing the incumbent or current family source into a better variant over discarding it for a totally new extension shape.
+- Do not re-emit the incumbent body or a trivial syntactic rewrite of it as a new variant. Every returned body must differ in a meaningful execution choice, not only in spelling or temporary naming.
+- Avoid repeating parameterizations or mechanisms that already regressed unless you have a concrete fix.
+- If a previous body clearly regressed, remove it from the revised parameter values instead of carrying it forward unchanged.
+- If the previous family produced too few distinct concrete variants after substitution, fix that directly: every declared parameter must change the rendered source or a real API/algorithm choice.
+- Optimize for public-range robustness, not a single shape.
+- Use only `{{PARAM_NAME}}` placeholders for tunable parameters; never emit `{PARAM_NAME}`.
+- Prefer launch-efficient vendor-backed or fused designs over naive custom kernels with redundant global-memory passes.
+- If the previous family was incorrect or slow, simplify aggressively toward a more reliable vendor-backed design instead of preserving a bad custom kernel.
+- Good revision directions include: preallocated outputs, `addmm` accumulation, better reuse of `B.transpose(0, 1).contiguous() @ X`, and chunked processing that still delegates GEMMs to vendor-backed kernels.
+- For this operator all operands are 2D, so `torch::mm` or `at::mm_out` can be worth testing, but use the recent execution-plan summary and measured outcomes to avoid retrying plans that already regressed or failed correctness.
+- When in doubt, prefer the simple in-place accumulation pattern `auto out = torch::mm(W, X); out.addmm_(A, tmp, 1.0, 1.0); return out;` as a strong vendor-backed revision anchor.
+- Treat `B.transpose(0, 1)` and `B.transpose(0, 1).contiguous()` as meaningfully different execution plans worth comparing.
+- Remove obviously weak bodies from revision output once feedback shows them regressing, including `copy_`, `clone`, `cat`, `narrow`, or separately materialized `low = A @ tmp` paths.
+- The JSON example below is only a format example. Do not copy its family name or body strings verbatim if they appear in recent-body history.
+- Use the recent execution-plan summary directly. If a plan family recently failed correctness or regressed, do not spend another revised variant on the same plan unless you are changing a real execution choice that plausibly fixes it.
+- `torch::addmm(input, mat1, mat2, beta, alpha)` takes one input tensor plus two matrices. Do not emit invalid signatures like `torch::addmm(W, W, X, low_rank, ...)`.
+- Use the feedback JSON directly: react to per-shape regressions, weakest shapes, compile/runtime failure summaries, and any profiler `bottleneck_hints` or `kernel_count`.
+- If the weakest shape is one of the large-edge cases, fix that path rather than optimizing only the middle shape.
+- If compile failures indicate API misuse, simplify toward the incumbent's valid ATen pattern before trying a new optimization.
+
+Return only JSON:
+{
+  "family_name": "short_family_name",
+  "rationale": "why the revised family should do better",
+  "expected_bottleneck": "launch_bound|memory_bound|compute_bound|mixed",
+  "source_template": "{{FORWARD_BODY}}",
+  "concrete_variants": [
+    {
+      "parameter_values": {
+        "FORWARD_BODY": "auto bt = B.transpose(0, 1).contiguous(); auto tmp = torch::matmul(bt, X); auto out = torch::matmul(W, X); out.addmm_(A, tmp, 1.0, 1.0); return out;"
+      }
+    },
+    {
+      "parameter_values": {
+        "FORWARD_BODY": "auto bt = B.transpose(0, 1).contiguous(); auto tmp = torch::mm(bt, X); auto out = torch::mm(W, X); out.addmm_(A, tmp, 1.0, 1.0); return out;"
+      }
+    },
+    {
+      "parameter_values": {
+        "FORWARD_BODY": "auto bt = B.transpose(0, 1).contiguous(); auto tmp = torch::empty({B.size(1), X.size(1)}, X.options()); at::mm_out(tmp, bt, X); auto out = torch::matmul(W, X); out.addmm_(A, tmp, 1.0, 1.0); return out;"
+      }
+    }
+  ]
+}

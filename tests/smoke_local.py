@@ -15,7 +15,7 @@ from unittest import mock
 FAKE_CUDA_SOURCE = "// fake cuda\nint main(){return 0;}\n"
 
 
-def _fake_chat_json(prompt, *, system=None, temperature=0.2, retries=1, deadline_s=None):
+def _fake_json(prompt, *, system=None, temperature=0.2, retries=1):
     if "Extract the numeric answer" in prompt:
         return {"value": 432.0, "unit": "cycles", "confidence": 0.8,
                 "reasoning": "matched RESULT line"}
@@ -30,7 +30,7 @@ def _fake_chat_json(prompt, *, system=None, temperature=0.2, retries=1, deadline
             "rationale": "stubbed probe"}
 
 
-def _fake_chat_cuda(prompt, *, system=None, temperature=0.2, deadline_s=None):
+def _fake_cuda(prompt, *, system=None, temperature=0.2):
     return FAKE_CUDA_SOURCE
 
 
@@ -80,9 +80,8 @@ def main() -> int:
 
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-        with mock.patch("sysforge.profiling.prompting.chat_json", side_effect=_fake_chat_json), \
-             mock.patch("sysforge.profiling.analysis.chat_json", side_effect=_fake_chat_json), \
-             mock.patch("sysforge.profiling.analysis.chat_cuda", side_effect=_fake_chat_cuda), \
+        with mock.patch("sysforge.agent.prompts.chat_json", new=_fake_json), \
+             mock.patch("sysforge.agent.prompts.chat_cuda", new=_fake_cuda), \
              mock.patch("sysforge.integrations.compiler.compile_cuda", return_value=_FakeCR()), \
              mock.patch("sysforge.integrations.executor.run_binary", return_value=_FakeRR()), \
              mock.patch("sysforge.integrations.ncu.profile", return_value=_FakeNR()):

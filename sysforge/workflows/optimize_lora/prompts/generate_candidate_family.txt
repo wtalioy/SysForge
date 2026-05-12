@@ -1,0 +1,93 @@
+Design one strong CUDA family for the LoRA operator
+Y = W X + A (B^T X)
+for float32 inputs on an RTX 3090.
+
+You are generating a self-contained PyTorch CUDA extension candidate family, not a fixed final answer.
+
+Environment summary:
+{env_summary}
+
+Current safe baseline forward body:
+{baseline_source}
+
+Previously tried family names:
+{tried_family_names}
+
+Recent concrete forward bodies already tried:
+{recent_body_history}
+Recent execution-plan summary:
+{recent_plan_summary}
+
+Validator feedback from local checks:
+{validator_feedback}
+
+Requirements:
+- Return a self-contained `.cu` extension source template that exports `forward(W, X, A, B)`.
+- The family may use ATen ops, custom CUDA kernels, or both.
+- Make the source directly runnable after parameter substitution.
+- By default, return a forward-body template only. Use a full `.cu` file only if you genuinely need custom helpers or custom CUDA kernels that cannot fit as a plain body.
+- A forward-body template must contain plain statements only. Do not include `#include`, `namespace`, `using namespace`, `TORCH_LIBRARY`, or any other top-level/module-registration constructs unless you are returning the full `.cu` file with `PYBIND11_MODULE`.
+- Use `{{PARAM_NAME}}` placeholders for tunable parameters.
+- Preferred initial-family format: use `source_template` as `{{FORWARD_BODY}}` or another single top-level placeholder, and return either `concrete_variants` with 3-6 explicit `parameter_values` mappings or a `FORWARD_BODY` parameter with 3-6 concrete body values. This is usually better than decorative numeric knobs when exploring vendor-backed implementations.
+- Unless you are deliberately tuning a value that changes emitted code, do not invent numeric parameters like `BLOCK_X` or `TILE_SIZE`. For the initial family, prefer `FORWARD_BODY` with several concrete code-body values.
+- Never emit `{PARAM_NAME}` or other single-brace placeholder syntax inside the source template.
+- Never use `...`, pseudocode, hook-registration examples, or incomplete signatures. Every returned line must be real compilable C++/CUDA for this exact extension interface.
+- Treat the provided baseline forward body as the default starting point; prefer editing that structure into a better implementation rather than writing a brand-new extension from scratch.
+- Prefer a small, meaningful parameter set that SysForge can search locally.
+- Ensure the initial parameter grid yields at least 3 concrete variants, preferably 4-6.
+- Every declared parameter must materially change the emitted source or a real API/algorithm choice. Do not include decorative parameters whose values leave the rendered code unchanged.
+- If your real search dimension is "which implementation body to use", encode that directly as a parameter such as `FORWARD_BODY` with multiple concrete code-body values.
+- If the best search shape is a short curated set of distinct candidates, prefer `concrete_variants` so SysForge tests exactly the variants you chose instead of truncating a larger local parameter grid.
+- Ensure each body is meaningfully different in execution strategy or API usage. Do not submit variants that differ only by temporary naming, expression spelling, or other cosmetic rewrites.
+- Do not return any concrete body that already appears in the recent-body history, and avoid the same execution plan with only superficial syntax changes.
+- Do not repeat prior family names or near-duplicate ideas.
+- Optimize for the public shape range d in [3584, 4608] with rank 16.
+- Prioritize fewer launches, less temporary traffic, and good performance across all public shapes.
+- Prefer vendor-backed or ATen/cuBLAS-backed building blocks unless you have a clear fused-kernel plan that is asymptotically sound.
+- For this operator all operands are 2D, so `torch::mm` or `at::mm_out` can be worth testing, but use the recent execution-plan summary and measured outcomes to avoid retrying plans that already regressed or failed correctness.
+- Avoid naive elementwise CUDA kernels that recompute large reductions per output element.
+- Strong candidate directions include: reusing vendor-backed GEMMs, minimizing materializations, using `addmm`/`mm`-style accumulation, and fusing only lightweight epilogues or layout conversions.
+- Valid ATen-style patterns include:
+  - `auto tmp = torch::mm(bt, X);`
+  - `auto out = torch::mm(W, X);`
+  - `out.addmm_(A, tmp, 1.0, 1.0); return out;`
+  - `return torch::addmm(out, A, tmp);`
+- When in doubt, prefer the simple in-place accumulation pattern `auto out = torch::mm(W, X); out.addmm_(A, tmp, 1.0, 1.0); return out;` as a strong vendor-backed baseline variant.
+- Treat `B.transpose(0, 1)` and `B.transpose(0, 1).contiguous()` as meaningfully different execution plans worth comparing.
+- In the initial family, avoid bodies that obviously add traffic without a concrete reason, such as `copy_`, `clone`, `cat`, `narrow`, or separately materializing `low = A @ tmp`.
+- The JSON example below is only a format example. Do not copy its family name or body strings verbatim if they appear in recent-body history.
+- Use the recent execution-plan summary directly. If a plan family recently failed correctness or regressed, do not spend another seed variant on the same plan unless you are changing a real execution choice that plausibly fixes it.
+- `torch::addmm(input, mat1, mat2, beta, alpha)` takes one input tensor plus two matrices. Never emit invalid signatures like `torch::addmm(W, W, X, low_rank, ...)`.
+- If you use a custom CUDA kernel, it must have a clear launch geometry, correct multidimensional indexing, and no redundant O(d) work inside each output element.
+- For the initial family, strongly prefer a fully vendor-backed implementation that composes `mm`, `matmul`, `addmm`, `out=` variants, in-place accumulation, or chunked column processing before attempting a raw CUDA kernel.
+- Use raw CUDA kernels only when they clearly reduce launches or materialization relative to vendor-backed GEMMs, and keep them small and obviously compilable.
+
+Return only JSON:
+{
+  "family_name": "short_family_name",
+  "rationale": "why this family might win",
+  "expected_bottleneck": "launch_bound|memory_bound|compute_bound|mixed",
+  "source_template": "{{FORWARD_BODY}}",
+  "concrete_variants": [
+    {
+      "parameter_values": {
+        "FORWARD_BODY": "auto bt = B.transpose(0, 1).contiguous(); auto tmp = torch::matmul(bt, X); auto out = torch::matmul(W, X); out.addmm_(A, tmp, 1.0, 1.0); return out;"
+      }
+    },
+    {
+      "parameter_values": {
+        "FORWARD_BODY": "auto bt = B.transpose(0, 1).contiguous(); auto tmp = torch::mm(bt, X); auto out = torch::mm(W, X); out.addmm_(A, tmp, 1.0, 1.0); return out;"
+      }
+    },
+    {
+      "parameter_values": {
+        "FORWARD_BODY": "auto bt = B.transpose(0, 1).contiguous(); auto tmp = torch::empty({B.size(1), X.size(1)}, X.options()); at::mm_out(tmp, bt, X); auto out = torch::matmul(W, X); out.addmm_(A, tmp, 1.0, 1.0); return out;"
+      }
+    },
+    {
+      "parameter_values": {
+        "FORWARD_BODY": "auto bt = B.transpose(0, 1).contiguous(); auto tmp = torch::matmul(bt, X); return torch::addmm(torch::matmul(W, X), A, tmp);"
+      }
+    }
+  ]
+}

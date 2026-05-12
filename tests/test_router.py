@@ -1,4 +1,4 @@
-from sysforge.profiling.targets import looks_like_ncu_metric, partition_targets
+from sysforge.workflows.profiling.targets import looks_like_ncu_metric, partition_targets
 
 
 def test_ncu_metric_names_classified():

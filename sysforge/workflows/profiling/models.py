@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -20,9 +20,6 @@ class Attempt:
     reject_reason: str
     rationale: str
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
 
 @dataclass
 class ProbeOutcome:
@@ -37,32 +34,6 @@ class ProbeOutcome:
 
 
 @dataclass
-class ProbeRecord:
-    value: float | None
-    unit: str
-    confidence: float
-    reasoning: str
-    accepted_samples: list[dict[str, Any]]
-    source: str
-    error: str
-
-    @classmethod
-    def from_outcome(cls, outcome: ProbeOutcome) -> "ProbeRecord":
-        return cls(
-            value=outcome.value,
-            unit=outcome.unit,
-            confidence=outcome.confidence,
-            reasoning=outcome.reasoning,
-            accepted_samples=outcome.accepted_samples,
-            source="probe",
-            error=outcome.error,
-        )
-
-    def to_output(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass
 class AnalysisOutcome:
     metrics_requested: list[str]
     per_metric: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -72,6 +43,3 @@ class AnalysisOutcome:
     summary: str = ""
     ncu_csv_tail: str = ""
     error: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)

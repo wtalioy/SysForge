@@ -1,12 +1,9 @@
 from .base import Workflow
-from .optimize_lora import OptimizeLoraWorkflow
-from .profiling import ProfilingWorkflow
-from .registry import WorkflowRegistry, build_registry
+from .registry import WorkflowRegistry, build_registry, register_workflow
 
 __all__ = [
-    "OptimizeLoraWorkflow",
-    "ProfilingWorkflow",
     "Workflow",
     "WorkflowRegistry",
     "build_registry",
+    "register_workflow",
 ]

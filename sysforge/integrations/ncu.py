@@ -36,16 +36,25 @@ def _parse_csv(text: str) -> list[dict[str, str]]:
 
 def profile(binary: Path, metrics: list[str], *, args: list[str] | None = None,
             timeout_s: float = 120.0) -> NcuResult:
+    return profile_command([str(binary), *(args or [])], metrics, timeout_s=timeout_s)
+
+
+def profile_command(
+    cmd: list[str],
+    metrics: list[str],
+    *,
+    timeout_s: float = 120.0,
+) -> NcuResult:
     ncu = find_ncu()
     if ncu is None:
         return NcuResult(False, -1, "", "ncu not found on PATH", [])
-    cmd = [
+    ncu_cmd = [
         ncu, "-f", "--target-processes", "all",
         "--metrics", ",".join(metrics), "--csv",
-        str(binary), *(args or []),
+        *cmd,
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+        result = subprocess.run(ncu_cmd, capture_output=True, text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired as exc:
         return NcuResult(False, -1, exc.stdout or "", f"ncu timeout after {timeout_s}s", [])
     rows = _parse_csv(result.stdout) if result.returncode == 0 else []

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from ..core.runtime import RuntimeContext
+from ..runtime import RuntimeContext
 
 
 @dataclass

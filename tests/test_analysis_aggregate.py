@@ -1,4 +1,4 @@
-from sysforge.profiling.analysis import aggregate_per_metric
+from sysforge.workflows.profiling.analysis import aggregate_per_metric
 
 
 # A slice of the CSV the server actually returned, with 2 invocations per metric.

@@ -1,5 +1,5 @@
-from sysforge.profiling.targets import CATALOG, strategy_for
-from sysforge.profiling.validation import check_plausible_range
+from sysforge.workflows.profiling.targets import CATALOG, strategy_for
+from sysforge.workflows.profiling.validation import check_plausible_range
 
 
 def test_catalog_has_section_1_7_targets():
