@@ -2,19 +2,88 @@
 
 ## 1. Overview
 
-SysForge is a workflow-based GPU measurement and performance-analysis tool. It is designed to evaluate CUDA-capable systems by collecting hardware characteristics, running generated CUDA probes, profiling workloads with Nsight Compute, validating the collected results, and exporting a structured machine-readable report.
+SysForge is a workflow-driven GPU systems tool for measurement, profiling, and code optimization on CUDA-capable machines. Instead of exposing a single monolithic pipeline, SysForge provides multiple workflow entry points that share the same runtime model: generate or transform workload code, execute it locally, validate the result, and emit a structured `output.json` artifact.
 
-The profiling workflow is built to support tasks where hardware information cannot always be obtained from a single static device query. Instead, SysForge actively measures properties such as memory latency, cache behavior, shared-memory performance, global-memory bandwidth, boost clock, and selected profiler metrics. It combines LLM-driven code generation with compiler execution, runtime testing, profiler integration, and validation logic.
+Today the project includes two implemented workflows:
 
-The primary entrypoint is `python -m sysforge.main profiling`, which writes its final output to `output.json`, making the system suitable for automated evaluation pipelines, benchmarking environments, and reproducible GPU-analysis workflows.
+- `python -m sysforge.main profiling`
+- `python -m sysforge.main optimize-lora`
+
+The `profiling` workflow focuses on answering hardware and performance questions through active measurement and profiler-driven analysis. The `optimize-lora` workflow focuses on improving a LoRA-style CUDA extension through LLM-authored candidate families, local benchmarking, promotion logic, and final confirmation.
+
+The key idea across both workflows is the same: SysForge uses agentic control to close the loop between code generation, compilation, execution, validation, and structured reporting.
 
 ---
 
-## 2. Primary Features
+## 2. Overall System Features
 
-### 2.1 Autonomous GPU Probe Generation
+### 2.1 Workflow-Based Architecture
 
-One of the main features of SysForge is its ability to automatically generate CUDA microbenchmarks for requested hardware targets. For a supported measurement target, the profiling workflow creates CUDA source code that is intended to measure the requested property directly on the available GPU.
+SysForge is organized around explicit workflow subcommands rather than a single hard-coded path. Each workflow is registered independently, uses a shared runtime context, and returns a typed result object that is serialized to `output.json`.
+
+This design has a few practical benefits:
+
+- different tasks can use different control logic without forking the whole system
+- shared infrastructure can be reused across workflows
+- new workflows can be added without rewriting the CLI contract
+- outputs remain machine-readable even when workflow internals differ
+
+---
+
+### 2.2 Agentic Closed-Loop Execution
+
+Both workflows follow a closed-loop execution model instead of a one-shot prompt model. SysForge does not stop at generating code or proposing an idea. It compiles artifacts, runs them, checks results, records failures, and uses the observed outcome to decide what to do next.
+
+Across the project, this loop may include:
+
+- code generation or code transformation
+- local compilation with `nvcc` or extension build tooling
+- runtime execution and benchmarking
+- profiler collection through Nsight Compute
+- result validation and plausibility checks
+- retry, repair, revision, or promotion decisions
+
+This is one of the main strengths of the project: the LLM is part of a measured system, not the sole source of truth.
+
+---
+
+### 2.3 Local Build and Execution Automation
+
+SysForge automates the full local execution path for generated or optimized CUDA artifacts. It manages source files, build directories, binaries or Python extensions, subprocess execution, timeouts, and error capture.
+
+That automation is important in both workflows:
+
+- `profiling` uses it to compile and run generated CUDA probes or profiler workloads
+- `optimize-lora` uses it to compile candidate kernel variants and benchmark them on a fixed harness
+
+The result is a reproducible local pipeline that can be used in benchmarking and evaluation environments without manual intervention at each step.
+
+---
+
+### 2.4 Structured, Audit-Friendly Results
+
+Every workflow writes a structured `output.json` file. The exact schema differs by workflow, but the shared design goal is the same: make the output useful for both automated scoring and human inspection.
+
+Depending on the workflow, the output may include:
+
+- workflow identity and status
+- start and finish timestamps
+- environment hints
+- measured results or benchmark summaries
+- candidate artifacts
+- validation outcomes
+- trace or controller history
+- errors and notes
+
+This makes SysForge suitable not only for running experiments, but also for reviewing how a result was produced.
+
+---
+
+## 3. Profiling Workflow Features
+
+### 3.1 Autonomous GPU Probe Generation
+
+The `profiling` workflow can generate CUDA microbenchmarks for requested hardware targets rather than relying only on static device queries.
 
 Examples of supported probe targets include:
 
@@ -22,216 +91,212 @@ Examples of supported probe targets include:
 - L2 latency
 - DRAM latency
 - L2 cache capacity
-- Shared-memory peak bandwidth
-- Global-memory peak bandwidth
-- Actual boost clock
-- Bank-conflict penalty
-- Maximum shared memory per block
-- Visible SM count
+- shared-memory peak bandwidth
+- global-memory peak bandwidth
+- actual boost clock
+- bank-conflict penalty
+- maximum shared memory per block
+- visible SM count
 
-This allows the workflow to go beyond simple device-property lookup and instead perform active measurement.
-
----
-
-### 2.2 Target-Aware Measurement Strategy
-
-SysForge uses a catalog of known hardware targets. Each catalog entry defines the expected unit, measurement strategy, plausible value range, and measurement description.
-
-This feature helps the workflow select a more appropriate method for each target. For example:
-
-- DRAM latency is measured through a large working-set pointer chase.
-- L2 cache capacity is inferred through a latency-vs-working-set-size sweep.
-- SM count is inferred by counting distinct `%smid` values.
-- Shared-memory bandwidth is measured using block-local shared-memory operations.
-- Actual boost clock is measured from device clock cycles and elapsed time.
-
-By encoding target-specific expectations, the system reduces the chance of using a generic or incorrect benchmark for specialized GPU measurements.
+This allows SysForge to actively measure hardware behavior that is often unavailable or unreliable through simple metadata lookup.
 
 ---
 
-### 2.3 LLM-Guided Self-Repair
+### 3.2 Target-Aware Measurement Strategy
 
-The profiling workflow includes a self-repair loop for generated CUDA programs. If a generated probe fails to compile, crashes at runtime, produces no extractable result, or returns an implausible value, SysForge can request a corrected version from the LLM.
+SysForge uses a target catalog that defines expected units, measurement strategies, plausible value ranges, and target descriptions. The profiling workflow uses this catalog to select more appropriate measurement logic for each requested target.
 
-The repair process handles several failure categories:
+For example:
 
-- Compilation errors
-- Runtime failures
-- Missing or malformed output
-- Implausible measurement values
-- Target-specific sanity-check failures
+- DRAM latency uses a large working-set pointer chase
+- L2 cache capacity is inferred from a latency sweep
+- SM count is inferred from distinct `%smid` values
+- boost clock is estimated from device cycles and elapsed time
 
-This makes the system more robust than a one-shot code-generation workflow. The workflow can iteratively improve the measurement program based on actual compiler and runtime feedback.
-
----
-
-### 2.4 CUDA Compilation and Execution Automation
-
-SysForge automatically writes generated CUDA source files into the workspace, compiles them with `nvcc`, and executes the resulting binaries. It manages build paths, source paths, binary paths, execution timeouts, and error capture.
-
-This automation allows each measurement to proceed through a complete local execution pipeline:
-
-1. Generate CUDA code.
-2. Save source file.
-3. Compile with `nvcc`.
-4. Run the binary.
-5. Capture stdout and stderr.
-6. Extract the result.
-7. Validate the result.
-8. Store the final measurement.
-
-The user does not need to manually compile or run each benchmark.
+Encoding target-specific expectations reduces the chance of measuring the wrong phenomenon with a generic benchmark.
 
 ---
 
-### 2.5 Nsight Compute Metric Support
+### 3.3 Nsight Compute Metric Collection
 
-SysForge also supports Nsight Compute metric targets. Metric names that follow the Nsight Compute-style pattern are routed to the profiling path instead of the CUDA probe-generation path.
+The profiling workflow also supports Nsight Compute metrics. Metric names that match the profiler-style format are routed into an analysis path rather than probe synthesis.
 
-For these targets, the profiling workflow generates a reference GEMM workload, compiles it, runs it, profiles it with `ncu`, and parses the CSV output. This enables direct collection of metrics such as SM throughput, memory throughput, device attributes, and other Nsight Compute counters.
+For these targets, SysForge:
 
-This feature is important because some requested values are not best measured with custom CUDA code. They are more accurately obtained through the profiler.
+1. builds a reference workload
+2. runs Nsight Compute
+3. parses the resulting metric data
+4. aggregates repeated samples into stable outputs
 
----
-
-### 2.6 Per-Metric Aggregation
-
-When Nsight Compute returns multiple rows for a metric, SysForge aggregates the values into a stable result. Numeric metric samples are collected, and the median value is used as the representative result.
-
-For each metric, the output may include:
-
-- Final value
-- Unit
-- Number of samples
-- Minimum sample value
-- Maximum sample value
-- Raw sample values
-- Error information if the metric is missing
-
-This makes profiler-based measurements easier to consume programmatically.
+This makes the profiling workflow useful for both generated probes and profiler-derived counters.
 
 ---
 
-### 2.7 Bottleneck Analysis and Recommendations
+### 3.4 Bottleneck Analysis
 
-For profiler-based runs, SysForge can summarize performance bottlenecks and provide optimization recommendations. The workflow uses collected Nsight Compute metrics to produce a higher-level analysis that may include:
+When profiler metrics are available, SysForge can summarize likely bottlenecks and provide optimization-oriented observations. Rather than exposing only raw counters, it can produce a higher-level analysis with evidence and recommendations.
 
-- Bottleneck classification
-- Supporting evidence
-- Optimization suggestions
-- Human-readable summary
-
-This feature turns raw profiler counters into a more useful performance-analysis report.
+This makes the profiling workflow useful as a performance-analysis tool, not just a metric collection script.
 
 ---
 
-## 3. Validation Features
+## 4. Optimize-LoRA Workflow Features
 
-### 3.1 Plausibility Checking
+### 4.1 Baseline Bootstrap and Search Initialization
 
-SysForge validates probe results against expected ranges defined in the target catalog. If a value is outside the plausible range, the workflow does not immediately accept it. Instead, it can request a corrected probe or return a low-confidence best-effort value only after retry options are exhausted.
+The `optimize-lora` workflow starts from a baseline LoRA-style CUDA extension and treats that implementation as the verified incumbent. SysForge writes the baseline artifact, validates it on benchmark shapes, and then uses it as the reference point for search.
 
-This prevents obviously incorrect results from being silently reported as successful measurements.
-
----
-
-### 3.2 Target-Specific Sanity Checks
-
-The project includes specialized sanity rules for common GPU-benchmarking mistakes. These checks improve the reliability of generated benchmarks by detecting cases where the code appears to run but is likely measuring the wrong thing.
-
-Examples of issues the workflow can detect include:
-
-- DRAM latency probes that accidentally measure cache hits.
-- Pointer-chase benchmarks with insufficient working-set size.
-- Cache-capacity sweeps that do not show a valid latency cliff.
-- Shared-memory bandwidth probes that actually measure global memory.
-- Bank-conflict tests that fail to create real bank conflicts.
-- SM-count probes that report block count instead of distinct SM IDs.
-- Clock measurements that exceed realistic boost-clock hints.
-- Bandwidth tests with too few or too many iterations per thread.
-
-These checks are a major feature of the project because they address the practical difficulty of generating correct GPU microbenchmarks.
+This gives the workflow a stable starting artifact and ensures that every optimized candidate is compared against a concrete local baseline.
 
 ---
 
-### 3.3 Stability Through Re-Runs
+### 4.2 LLM-Authored Candidate Families
 
-When a probe produces an accepted value, SysForge can rerun the accepted binary to collect additional samples. The final result is selected from accepted samples using the median.
+Instead of asking the model for a single kernel implementation, SysForge asks for parameterized candidate families. A family can define a source template plus a small parameter space, or an explicit curated set of concrete variants.
 
-This improves stability and reduces dependence on a single execution, which is especially useful for GPU measurements that may vary due to scheduling, clock behavior, thermal state, or system load.
+This is an important project feature because it combines:
 
----
+- LLM-guided search-space design
+- local enumeration of variants
+- measured comparison instead of purely textual ranking
 
-### 3.4 Confidence Reporting
-
-Each hardware result includes a confidence value. Successful probe results receive confidence based on the extraction result and corroborating samples. Nsight Compute metric results receive high confidence when the metric is successfully captured and low confidence when missing.
-
-This gives downstream consumers a way to distinguish strong measurements from partial or best-effort outputs.
+The workflow can also revise a family in later rounds using round feedback, recent history, and incumbent context.
 
 ---
 
-## 4. Reporting Features
+### 4.3 Multi-Stage Benchmarking and Promotion
 
-### 4.1 Structured JSON Output
+Candidate search uses staged evaluation rather than a single benchmark pass. SysForge screens candidates on lighter benchmark tiers, promotes strong variants to fuller evaluation, and finally confirms the best candidates with a more stable final pass.
 
-SysForge writes results to `output.json`. The output is designed for automated scoring, inspection, and downstream processing.
+At a high level, the workflow uses:
 
-The output includes:
+- early screening to filter weak candidates quickly
+- full evaluation for shortlisted candidates
+- final confirmation for the strongest finalists
 
-- Requested input targets
-- Routed probe targets
-- Routed profiler metrics
-- Hardware measurement results
-- Nsight Compute analysis results
-- Environment hints
-- Execution trace
-- Errors
-- Start and finish timestamps
-
-This structure makes the report both machine-readable and audit-friendly.
+This staged structure helps control search cost while still making the winner decision based on stronger evidence.
 
 ---
 
-### 4.2 Unified Hardware Result Format
+### 4.4 Search Control and Recovery
 
-Probe-based results and Nsight Compute-based results are promoted into the same top-level `hardware` dictionary. Each target is keyed by name and includes fields such as value, unit, confidence, source, and error status.
+The optimize-lora workflow includes explicit control logic for promotion, close-frontier handling, stalled rounds, family revision, regeneration, and fallback recovery.
 
-This unified format simplifies consumption by evaluators or external tools because all requested target results can be read from a single location.
+Examples of behavior the controller supports include:
 
----
+- keeping the incumbent when a challenger regresses
+- deferring early stop when the frontier is too close to call
+- revising a family after round feedback
+- regenerating a fresh family when revision gets boxed into duplicate history
+- falling back to local search patterns if LLM-generated continuation fails
 
-### 4.3 Execution Traceability
-
-SysForge records detailed trace information for probe attempts. The trace can include:
-
-- Probe version
-- Generation or repair phase
-- Source path
-- Compilation status
-- Compiler stderr
-- Runtime status
-- Runtime stdout and stderr tails
-- Extracted values
-- Plausibility status
-- Rejection reason
-- Agent rationale
-
-This trace is useful for debugging, auditing, and understanding why a particular value was accepted or rejected.
+This makes the workflow more robust than a naive “generate N kernels and pick the fastest” script.
 
 ---
 
-### 4.4 Partial Output Flushing
+### 4.5 Optional Profile-Guided Candidate Inspection
 
-After each completed probe target, SysForge writes partial results to the output file. This improves resilience during long-running measurements. If the process stops before all targets finish, completed results may still be available.
+The optimize-lora workflow can optionally profile promising candidates and summarize their bottlenecks. This reuses SysForge’s profiler integration in service of kernel search rather than standalone hardware reporting.
+
+That is a good example of the project’s shared architecture: profiler support is not confined to one workflow, even though the workflows use it for different goals.
 
 ---
 
-## 5. Workflow Entry Points
+## 5. Validation and Reliability Features
 
-SysForge now exposes explicit workflow subcommands instead of a single implicit orchestration path:
+### 5.1 Plausibility and Correctness Checks
+
+SysForge does not treat a completed run as automatically correct. Each workflow includes validation logic appropriate to its task.
+
+- `profiling` validates measured values against plausible ranges and target-specific sanity rules
+- `optimize-lora` validates candidate correctness and compares benchmark behavior against the incumbent and reference
+
+This protects the system from accepting outputs that compiled successfully but do not mean what they appear to mean.
+
+---
+
+### 5.2 Self-Repair and Retry Paths
+
+A central feature of SysForge is that failures feed back into the control loop. Depending on the workflow, the system can recover from:
+
+- compile failures
+- runtime failures
+- malformed or missing output
+- implausible measurements
+- duplicate or low-value candidate revisions
+
+In the profiling workflow, this appears as LLM-guided probe repair. In the optimize-lora workflow, it appears as family revision, regeneration, reranking, reruns, and fallback logic.
+
+---
+
+### 5.3 Stability Through Re-Runs
+
+SysForge uses repeated measurements to reduce sensitivity to noise. The exact mechanism varies by workflow, but the general pattern is consistent: rerun important evaluations, aggregate samples, and prefer stable summary statistics such as medians or geometric means.
+
+This matters because GPU measurements can vary due to scheduling, clock behavior, thermal conditions, or transient system load.
+
+---
+
+## 6. Reporting Features
+
+### 6.1 Machine-Readable JSON Output
+
+Each workflow emits an `output.json` file tailored to its task.
+
+For `profiling`, the output emphasizes:
+
+- requested targets
+- routed probe and metric targets
+- hardware results
+- analysis summaries
+- per-target trace information
+
+For `optimize-lora`, the output emphasizes:
+
+- candidate records
+- benchmark tier summaries
+- current best artifact
+- controller trace
+- winner confirmation state
+
+Despite those differences, both workflows preserve the same reporting principles: explicit status, structured fields, and enough traceability to reconstruct what happened.
+
+---
+
+### 6.2 Traceability and Debuggability
+
+SysForge records detailed intermediate state so that results can be audited after the fact.
+
+Examples include:
+
+- probe attempt traces in `profiling`
+- controller and promotion traces in `optimize-lora`
+- compile and runtime errors
+- benchmark summaries
+- accepted or rejected outcomes
+
+This is valuable both for debugging the system itself and for understanding why a final result should be trusted.
+
+---
+
+### 6.3 Partial Progress Preservation
+
+SysForge writes intermediate progress so that long-running workflows are more resilient to interruption.
+
+This is especially useful when:
+
+- the profiling workflow is measuring many targets
+- the optimize-lora workflow is compiling and benchmarking many candidates
+
+Even when a full run does not complete perfectly, partial progress may still be available for inspection.
+
+---
+
+## 7. Workflow Entry Points
+
+SysForge currently exposes these workflow entry points:
 
 - `python -m sysforge.main profiling`
 - `python -m sysforge.main optimize-lora`
 
-Today, `profiling` is the implemented production workflow, while `optimize-lora` is a registered scaffold for future work.
-
+Together, these workflows show that SysForge is not just a profiler wrapper and not just a kernel search script. It is a general workflow platform for GPU-facing agentic tasks, with shared execution infrastructure and task-specific control logic layered on top.
