@@ -94,3 +94,36 @@ def test_candidate_builder_caches_compile_failures(tmp_path, monkeypatch):
     assert first_module is None
     assert second_module is None
     assert compile_calls["count"] == 1
+
+
+def test_candidate_builder_uses_cpp_backend_for_aten_only_source(tmp_path, monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_load(name, sources, verbose, extra_cuda_cflags, with_cuda, build_directory):
+        captured["sources"] = sources
+        captured["with_cuda"] = with_cuda
+        captured["build_directory"] = build_directory
+        return _FakeCompiledModule()
+
+    monkeypatch.setattr("sysforge.workflows.optimize_lora.build.load", fake_load)
+    builder = CandidateBuilder(_workspace(tmp_path))
+    candidate = builder.register_candidate(
+        candidate_id="candidate-cpp",
+        family="llm_revision",
+        source=BASELINE_SOURCE,
+    )
+
+    compile_result, module = builder.load_candidate(candidate)
+
+    assert compile_result.status == "built"
+    assert module is not None
+    assert captured["with_cuda"] is False
+    assert len(captured["sources"]) == 1
+    source_path = Path(captured["sources"][0])
+    assert source_path.suffix == ".cpp"
+    assert source_path.exists()
+    assert Path(captured["build_directory"]).name == "cpp"
+    text = source_path.read_text(encoding="utf-8")
+    assert "#include <torch/extension.h>" in text
+    assert "#include <cuda.h>" not in text
+    assert "#include <cuda_runtime.h>" not in text

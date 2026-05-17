@@ -45,7 +45,7 @@ class SearchConfig:
     final_confirmation_candidates: int = 3
     max_close_finalists: int = 4
     clear_winner_speedup: float = 1.05
-    profile_enabled: bool = False
+    profile_enabled: bool = True
     final_confirm_warmup: int = 2
     final_confirm_iters: int = 6
     tier1_rerun_warmup: int = 2
@@ -65,7 +65,7 @@ class SearchConfig:
             final_confirmation_candidates=env_int("OPTIMIZE_LORA_FINAL_CONFIRMATION_CANDIDATES", 3),
             max_close_finalists=env_int("OPTIMIZE_LORA_MAX_CLOSE_FINALISTS", 4),
             clear_winner_speedup=env_float("OPTIMIZE_LORA_CLEAR_WINNER_SPEEDUP", 1.05),
-            profile_enabled=os.environ.get("OPTIMIZE_LORA_PROFILE_ENABLED", "0") == "1",
+            profile_enabled=os.environ.get("OPTIMIZE_LORA_PROFILE_ENABLED", "1") == "1",
             final_confirm_warmup=env_int("OPTIMIZE_LORA_FINAL_CONFIRM_WARMUP", 2),
             final_confirm_iters=env_int("OPTIMIZE_LORA_FINAL_CONFIRM_ITERS", 6),
             tier1_rerun_warmup=env_int("OPTIMIZE_LORA_TIER1_RERUN_WARMUP", 2),
@@ -126,11 +126,21 @@ class OptimizeLoraAgent(SearchAgent):
         self._round_evaluator = RoundEvaluator(self)
 
     def run(self) -> OptimizeLoraResult:
+        self.log(
+            "starting optimize-lora "
+            f"(llm_enabled={self.result.llm_enabled}, "
+            f"validation_shape={self.harness.config.validation_shape}, "
+            f"tier1_shapes={list(self.harness.config.tier1_shapes)}, "
+            f"tier2_shapes={list(self.harness.config.tier2_shapes)}, "
+            f"tier3_shapes={list(self.harness.config.tier3_shapes)})"
+        )
         self.bootstrap_baseline()
         if self.result.llm_enabled:
             self.run_family_search()
         else:
+            self.log("llm search unavailable; keeping validated baseline only")
             self.record_trace(action="family_search_skipped", reason="llm_disabled")
+        self.log("running final confirmation for top candidates")
         self._round_evaluator.finalize_winner()
         if self.result.winner_confirmed and self.result.best_candidate_kind == "optimized":
             self.result.status = "optimized"
@@ -141,11 +151,21 @@ class OptimizeLoraAgent(SearchAgent):
         else:
             self.result.status = "confirmed_baseline"
             self.result.summary = "Validated the bootstrap baseline because the LLM search loop was unavailable."
+        self.log(
+            "finished optimize-lora "
+            f"(status={self.result.status}, winner={self.result.current_best_candidate_id or 'none'}, "
+            f"winner_kind={self.result.best_candidate_kind}, tier2={self.result.best_tier2_speedup:.4f}, "
+            f"tier3={self.result.best_tier3_speedup:.4f})"
+        )
         self.result.controller_trace = list(self.trace)
         stamp_finished(self.result)
         return self.result
 
     def bootstrap_baseline(self) -> None:
+        self.log(
+            "validating baseline reference "
+            f"on tier2 shapes {list(self.harness.tier_shapes(TIER2))}"
+        )
         baseline = CandidateRecord(
             candidate_id="baseline-v0",
             family="baseline",
@@ -164,7 +184,15 @@ class OptimizeLoraAgent(SearchAgent):
             self.result.candidates.append(baseline)
         self.result.verified_baseline = True
         self._sync_best_result_state(baseline, best_kind="baseline")
+        tier2 = baseline.evaluation.tier(TIER2)
+        if tier2 is not None:
+            self.log(
+                f"baseline ready (candidate={baseline.candidate_id}, tier2_speedup={tier2.geometric_mean_speedup:.4f})"
+            )
         self.record_trace(action="bootstrap_baseline_reference", candidate_id=baseline.candidate_id)
+
+    def log(self, message: str) -> None:
+        print(f"[sysforge][optimize-lora] {message}", flush=True)
 
     def _incumbent_forward_body(self) -> str:
         if self.current_best is None:
@@ -247,6 +275,7 @@ class OptimizeLoraAgent(SearchAgent):
             return regenerated
 
     def run_family_search(self) -> None:
+        self.log("requesting initial candidate family from LLM")
         try:
             family = family_agent.generate_candidate_family(
                 baseline_source=self._incumbent_forward_body(),
@@ -255,20 +284,37 @@ class OptimizeLoraAgent(SearchAgent):
             )
         except Exception as exc:  # noqa: BLE001
             self.result.errors.append(f"generate_candidate_family failed: {exc}")
+            self.log(f"initial family generation failed: {exc}")
             self.record_trace(action="family_generation_failed", error=str(exc))
             return
         for _ in range(self.config.max_llm_rounds):
             round_index = self.begin_round(family.family_name)
+            planned_variants = len(self._iter_family_mappings(family))
+            self.log(
+                f"round {round_index} started "
+                f"(family={family.family_name}, planned_variants={planned_variants}, "
+                f"stalled_rounds={self.state.stalled_rounds})"
+            )
             self.tried_family_names.append(family.family_name)
             try:
                 feedback = self._round_evaluator.evaluate_family_round(family=family, round_index=round_index)
             except Exception as exc:  # noqa: BLE001
                 self.result.errors.append(f"evaluate_family_round failed: {exc}")
+                self.log(f"round {round_index} failed for family={family.family_name}: {exc}")
                 self.record_trace(action="family_round_failed", family_name=family.family_name, error=str(exc))
                 break
             self.finish_round(improved=feedback.improved)
+            self.log(
+                f"round {round_index} finished "
+                f"(improved={feedback.improved}, best_tier2={feedback.best_tier2_speedup:.4f}, "
+                f"runner_up_tier2={feedback.second_tier2_speedup:.4f})"
+            )
             if feedback.best_tier2_speedup >= self.config.clear_winner_speedup:
                 if feedback.close_frontier:
+                    self.log(
+                        f"round {round_index} has a near winner but frontier is still close "
+                        f"(best={feedback.best_tier2_speedup:.4f}, runner_up={feedback.second_tier2_speedup:.4f})"
+                    )
                     self.record_trace(
                         action="clear_winner_deferred",
                         reason="close_frontier",
@@ -278,6 +324,10 @@ class OptimizeLoraAgent(SearchAgent):
                         challenger_separation_guard_pct=feedback.challenger_separation_guard_pct,
                     )
                 else:
+                    self.log(
+                        f"stopping search after round {round_index}: clear winner at "
+                        f"{feedback.best_tier2_speedup:.4f}x"
+                    )
                     self.record_trace(
                         action="search_stopped",
                         reason="clear_winner",
@@ -288,9 +338,11 @@ class OptimizeLoraAgent(SearchAgent):
                     break
             decision = self.stop_decision()
             if decision.should_stop:
+                self.log(f"stopping search after round {round_index}: {decision.reason}")
                 self.result.skipped_steps.append({"step_name": "stop", "reason": decision.reason})
                 self.record_trace(action="search_stopped", reason=decision.reason)
                 break
+            self.log(f"requesting revised family after round {round_index}")
             family = self._advance_family(
                 family=family,
                 incumbent_source=self._incumbent_forward_body(),

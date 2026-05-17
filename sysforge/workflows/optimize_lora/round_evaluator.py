@@ -21,6 +21,10 @@ class RoundEvaluator:
 
     def evaluate_family_round(self, *, family: CandidateFamilyDraft, round_index: int, allow_repair: bool = True) -> RoundFeedback:
         concrete_candidates = self.owner._instantiate_family(family, round_index=round_index)
+        self.owner.log(
+            f"round {round_index}: instantiated {len(concrete_candidates)} concrete candidates "
+            f"for family={family.family_name}"
+        )
         if round_index == 1 and len(concrete_candidates) < self.owner.config.min_seed_variants:
             self.owner.record_trace(
                 action="family_distinct_variants_short",
@@ -47,12 +51,23 @@ class RoundEvaluator:
             concrete_candidates=concrete_candidates,
             round_index=round_index,
         )
+        self.owner.log(
+            f"round {round_index}: screen complete "
+            f"(successful={len(successful)}, failed={len(feedback_rows) - len(successful)})"
+        )
         if is_seed_round:
             self.owner.result.seed_variants_screened = len(successful)
         else:
             self.owner.result.mutation_variants_screened += len(successful)
         self.rerun_close_tier1_candidates(successful, incumbent=self.owner.current_best or self.owner.baseline)
         ranked = self.select_tier2_shortlist(successful)
+        if ranked:
+            self.owner.log(
+                f"round {round_index}: selected {len(ranked)} candidates for tier2 "
+                f"({', '.join(candidate.candidate_id for candidate in ranked)})"
+            )
+        else:
+            self.owner.log(f"round {round_index}: no candidates advanced to tier2")
 
         improved = False
         round_start_incumbent = self.owner.current_best
@@ -64,6 +79,10 @@ class RoundEvaluator:
             self._maybe_profile_candidate(candidate)
             decision = compare_tier_summaries(full, round_start_incumbent.evaluation.tier(TIER2))
             candidate.comparison_summary = decision.reason
+            self.owner.log(
+                f"round {round_index}: tier2 result for {candidate.candidate_id} "
+                f"(geo={full.geometric_mean_speedup:.4f}, promote={decision.promote})"
+            )
             self.owner.record_trace(
                 action="candidate_ranked",
                 round_index=round_index,
@@ -113,6 +132,10 @@ class RoundEvaluator:
                 if candidate.family == "baseline"
                 else (candidate.candidate_id, self.owner._forwards[candidate.candidate_id])
             )
+            self.owner.log(
+                f"final confirmation: benchmarking {candidate.candidate_id} "
+                f"on tier3 shapes {list(self.owner.harness.tier_shapes(TIER3))}"
+            )
             try:
                 summary = self.owner.harness.evaluate_tier(
                     candidate_key,
@@ -130,6 +153,9 @@ class RoundEvaluator:
             rows.append((candidate.candidate_id, summary))
             summaries[candidate.candidate_id] = candidate
             self.owner.record_trace(action="final_confirmation_candidate", candidate_id=candidate.candidate_id, geo_speedup=summary.geometric_mean_speedup)
+            self.owner.log(
+                f"final confirmation: {candidate.candidate_id} geo_speedup={summary.geometric_mean_speedup:.4f}"
+            )
 
         best = select_best_finalist(rows)
         if best is None:
@@ -157,6 +183,10 @@ class RoundEvaluator:
         self.owner.result.winner_confirmed = True
         self.owner.result.finalist_summary = finalist_summary
         self.owner.result.best_tier3_speedup = finalist_summary.geometric_mean_speedup
+        self.owner.log(
+            f"final winner: {winner.candidate_id} "
+            f"(family={winner.family}, tier3_speedup={finalist_summary.geometric_mean_speedup:.4f})"
+        )
         self.owner.record_trace(action="final_winner", candidate_id=winner.candidate_id, geo_speedup=finalist_summary.geometric_mean_speedup)
 
     def select_tier2_shortlist(self, successful: list[CandidateRecord]) -> list[CandidateRecord]:
@@ -499,15 +529,25 @@ class RoundEvaluator:
         return next((row.speedup_vs_reference for row in tier1.shape_results if row.shape_d == largest_shape), 0.0)
 
     def _compile_single(self, candidate: CandidateRecord) -> bool:
+        self.owner.log(f"compiling {candidate.candidate_id} (family={candidate.family})")
         compile_result, module = self.owner.builder.load_candidate(candidate)
         candidate.compile = compile_result
         self.owner.result.compile_time_s_total += compile_result.duration_s
         if module is None:
             candidate.failure_stage = "compile"
             candidate.failure_summary = compile_result.error or "compile_failed"
+            self.owner.log(
+                f"compile failed for {candidate.candidate_id}: {candidate.failure_summary} "
+                f"(log={compile_result.log_path})"
+            )
             self.owner.record_trace(action="compile_failed", candidate_id=candidate.candidate_id, error=candidate.failure_summary)
             return False
         self.owner._forwards[candidate.candidate_id] = getattr(module, candidate.entrypoint_name)
+        status = "cached" if compile_result.status == "cache_hit" else "built"
+        self.owner.log(
+            f"compile {status} for {candidate.candidate_id} "
+            f"(duration_s={compile_result.duration_s:.3f})"
+        )
         return True
 
     def _evaluate_candidate(
@@ -519,6 +559,10 @@ class RoundEvaluator:
         warmup: int | None = None,
         iters: int | None = None,
     ):
+        self.owner.log(
+            f"benchmarking {candidate.candidate_id} on {tier_name} "
+            f"shapes {list(self.owner.harness.tier_shapes(tier_name))}"
+        )
         candidate_key, forward_fn = (
             (REFERENCE_KEY, reference_impl)
             if candidate.family == "baseline"
@@ -540,6 +584,10 @@ class RoundEvaluator:
         candidate.updated_at = strftime("%Y-%m-%dT%H:%M:%S")
         if tier_name == TIER1:
             self.owner.result.variants_benchmarked += 1
+        self.owner.log(
+            f"{tier_name} complete for {candidate.candidate_id} "
+            f"(geo={summary.geometric_mean_speedup:.4f}, correctness={summary.correctness_passed})"
+        )
         return summary
 
     def _maybe_profile_candidate(self, candidate: CandidateRecord) -> None:
@@ -552,9 +600,12 @@ class RoundEvaluator:
             return
         tier2 = candidate.evaluation.tier(TIER2) if candidate.evaluation else None
         shape_d = max(tier2.shapes) if tier2 and tier2.shapes else self.owner.harness.config.validation_shape
+        self.owner.log(f"profiling {candidate.candidate_id} at shape_d={shape_d}")
         candidate.profile_summary = self.owner.profiler.profile_candidate(candidate=candidate, compile_result=candidate.compile, shape_d=shape_d)
         if not candidate.profile_summary.error:
             self.owner.result.profiling_used = True
+            self.owner.log(f"profile complete for {candidate.candidate_id}")
             self.owner.record_trace(action="profiled_candidate", candidate_id=candidate.candidate_id, shape_d=shape_d)
             return
+        self.owner.log(f"profile failed for {candidate.candidate_id}: {candidate.profile_summary.error}")
         self.owner.record_trace(action="profile_failed", candidate_id=candidate.candidate_id, shape_d=shape_d, error=candidate.profile_summary.error)

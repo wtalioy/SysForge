@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
+import shutil
 import time
 import traceback
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import torch
@@ -27,6 +29,17 @@ def _append_log(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(content.rstrip() + "\n")
+
+
+CUDA_ONLY_INCLUDE_RE = re.compile(
+    r"^\s*#include\s+<(?:ATen/cuda/CUDAContext\.h|cuda\.h|cuda_runtime\.h)>\s*$",
+    re.MULTILINE,
+)
+CUDA_SYNTAX_RE = re.compile(
+    r"__global__|__device__|__host__|<<<|>>>|\bcuda(?:Malloc|Free|Memcpy|Memset|DeviceSynchronize|GetLastError|Stream|Event)\b|"
+    r"\bCU(?:device|context|stream|event|function|module)\b|\bthreadIdx\b|\bblockIdx\b|\bblockDim\b|\bgridDim\b",
+)
+STALE_LOCK_AGE_S = 300
 
 
 def _detect_arch_list() -> str:
@@ -76,6 +89,51 @@ class CandidateBuilder:
             entrypoint_name=entrypoint_name,
         )
 
+    def _source_uses_cuda(self, candidate: CandidateRecord) -> bool:
+        source = Path(candidate.source_path).read_text(encoding="utf-8")
+        return CUDA_SYNTAX_RE.search(source) is not None
+
+    def _prepare_build_source(self, candidate: CandidateRecord, build_dir: Path) -> tuple[Path, bool]:
+        source_path = Path(candidate.source_path)
+        source = source_path.read_text(encoding="utf-8")
+        if CUDA_SYNTAX_RE.search(source):
+            return source_path, True
+        cpp_path = build_dir / f"{candidate.module_name}.cpp"
+        cpp_source = CUDA_ONLY_INCLUDE_RE.sub("", source).strip() + "\n"
+        cpp_path.parent.mkdir(parents=True, exist_ok=True)
+        cpp_path.write_text(cpp_source, encoding="utf-8")
+        return cpp_path, False
+
+    def _clear_stale_lock(self, build_dir: Path) -> None:
+        lock_path = build_dir / "lock"
+        if not lock_path.exists():
+            return
+        age_s = time.time() - lock_path.stat().st_mtime
+        if age_s < STALE_LOCK_AGE_S:
+            return
+        lock_path.unlink(missing_ok=True)
+
+    def _ensure_backend_build_dir(self, candidate: CandidateRecord, backend: str) -> Path:
+        legacy_build_dir = self.workspace.candidate_build_dir(candidate.source_hash)
+        build_dir = legacy_build_dir / backend
+        build_dir.mkdir(parents=True, exist_ok=True)
+        self._clear_stale_lock(build_dir)
+        legacy_lock = legacy_build_dir / "lock"
+        if legacy_lock.exists():
+            age_s = time.time() - legacy_lock.stat().st_mtime
+            if age_s >= STALE_LOCK_AGE_S:
+                legacy_lock.unlink(missing_ok=True)
+        legacy_ninja = legacy_build_dir / "build.ninja"
+        if legacy_ninja.exists() and not any(build_dir.iterdir()):
+            for path in legacy_build_dir.iterdir():
+                if path.name == backend:
+                    continue
+                if path.is_dir():
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    path.unlink(missing_ok=True)
+        return build_dir
+
     def load_candidate(self, candidate: CandidateRecord) -> tuple[CandidateCompileResult, object | None]:
         cached_module = self._module_cache.get(candidate.source_hash)
         if cached_module is not None:
@@ -94,22 +152,25 @@ class CandidateBuilder:
         if cached_failure is not None:
             return cached_failure, None
 
-        build_dir = self.workspace.candidate_build_dir(candidate.source_hash)
         log_path = self.workspace.candidate_log_path(candidate.source_hash)
-        build_dir.mkdir(parents=True, exist_ok=True)
+        backend = "cuda" if self._source_uses_cuda(candidate) else "cpp"
+        build_dir = self._ensure_backend_build_dir(candidate, backend)
+        build_source_path, with_cuda = self._prepare_build_source(candidate, build_dir)
+        backend = "cuda" if with_cuda else "cpp"
         _append_log(
             log_path,
-            f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] build_start module={candidate.module_name} source={candidate.source_path} build_dir={build_dir}",
+            f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] build_start module={candidate.module_name} "
+            f"source={candidate.source_path} build_source={build_source_path} backend={backend} build_dir={build_dir}",
         )
         started = time.monotonic()
         try:
-            with _torch_arch_list_env():
+            with _torch_arch_list_env() if with_cuda else nullcontext():
                 module = load(
                     name=candidate.module_name,
-                    sources=[candidate.source_path],
+                    sources=[str(build_source_path)],
                     verbose=False,
                     extra_cuda_cflags=["-O3"],
-                    with_cuda=True,
+                    with_cuda=with_cuda,
                     build_directory=str(build_dir),
                 )
         except Exception as exc:  # noqa: BLE001
