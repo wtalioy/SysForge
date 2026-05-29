@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from sysforge.agent.llm import (
     LLMError,
     chat_json,
@@ -13,14 +15,12 @@ from sysforge.agent.llm import (
 from sysforge.agent.prompts import cuda_prompt_file, json_prompt, render_prompt, system_prompt
 
 
-def test_extract_fenced_block_prefers_requested_language():
+def test_response_extractors_handle_fenced_code_json_and_missing_json():
     text = "```python\nprint('x')\n```\n```cuda\nextern \"C\" int x;\n```"
     assert extract_fenced_block(text, preferred_lang="cuda") == 'extern "C" int x;'
-
-
-def test_extract_json_object_recovers_from_wrapped_response():
-    obj = extract_json_object("before\n```json\n{\"a\": 1}\n```\nafter")
-    assert obj == {"a": 1}
+    assert extract_json_object("before\n```json\n{\"a\": 1}\n```\nafter") == {"a": 1}
+    with pytest.raises(LLMError, match="No JSON object found"):
+        extract_json_object("not json")
 
 
 def test_prompt_helpers_load_and_render(tmp_path: Path):
@@ -127,29 +127,17 @@ def test_chat_text_retries_without_temperature_when_backend_rejects_it(monkeypat
     assert "temperature" not in calls[1]
 
 
-def test_has_llm_config_accepts_custom_base_url_without_api_key():
+def test_llm_configuration_helpers_accept_local_backends_without_api_keys():
     assert has_llm_config(api_key="", base_url="http://127.0.0.1:8000/v1", model="stub-model") is True
     assert has_llm_config(api_key="", base_url="", model="stub-model") is False
     assert has_llm_config(api_key="stub", base_url="", model="stub-model") is True
     assert has_llm_config(api_key="", base_url="http://127.0.0.1:8000/v1", model="") is False
-
-
-def test_resolve_api_key_uses_dummy_for_custom_base_url():
     assert resolve_api_key(api_key="", base_url="http://127.0.0.1:8000/v1") == "dummy"
 
 
 def test_is_transient_detects_common_transport_errors():
     assert is_transient(RuntimeError("502 bad gateway")) is True
     assert is_transient(RuntimeError("syntax problem")) is False
-
-
-def test_extract_json_object_raises_for_missing_object():
-    try:
-        extract_json_object("not json")
-    except LLMError as exc:
-        assert "No JSON object found" in str(exc)
-    else:
-        raise AssertionError("expected LLMError")
 
 
 def test_chat_json_reprompts_after_invalid_json(monkeypatch):
