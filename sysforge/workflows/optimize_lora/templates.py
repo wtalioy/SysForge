@@ -52,7 +52,6 @@ FORWARD_BODY_RE = re.compile(
     r"torch::Tensor forward\(\s*torch::Tensor W,\s*torch::Tensor X,\s*torch::Tensor A,\s*torch::Tensor B\)\s*\{\s*check_inputs\(W, X, A, B\);\s*(?P<body>.*?)\s*\}\s*PYBIND11_MODULE",
     re.DOTALL,
 )
-INCLUDE_RE = re.compile(r"^\s*#include.*$", re.MULTILINE)
 
 
 def _render_single_forward(function_name: str, body: str) -> str:
@@ -77,16 +76,6 @@ def extract_forward_body(source: str) -> str:
     if match:
         return match.group("body").rstrip()
     return source.strip()
-
-
-def sanitize_generated_body(generated: str) -> str:
-    body = extract_forward_body(generated)
-    body = INCLUDE_RE.sub("", body).strip()
-    if "PYBIND11_MODULE" in body:
-        body = body.split("PYBIND11_MODULE", 1)[0].strip()
-    if "torch::Tensor forward" in body:
-        body = extract_forward_body(body)
-    return body.rstrip()
 
 
 BASELINE_SOURCE = render_source_from_body(

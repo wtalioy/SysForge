@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from time import strftime
 from typing import TYPE_CHECKING
 
+from ...time_utils import workflow_timestamp
 from . import prompting as family_agent
 from .harness import REFERENCE_KEY, reference_impl
 from .models import CandidateEvaluation, CandidateFeedback, CandidateRecord, ConcreteCandidate, RoundFeedback
@@ -581,7 +581,7 @@ class RoundEvaluator:
         if candidate.evaluation is None:
             candidate.evaluation = CandidateEvaluation()
         candidate.evaluation.add_tier_summary(summary)
-        candidate.updated_at = strftime("%Y-%m-%dT%H:%M:%S")
+        candidate.updated_at = workflow_timestamp()
         if tier_name == TIER1:
             self.owner.result.variants_benchmarked += 1
         self.owner.log(

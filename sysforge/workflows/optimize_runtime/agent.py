@@ -8,12 +8,13 @@ from pathlib import Path
 from ...agent import BaseAgent
 from ...agent.llm import has_llm_config
 from ...runtime import RuntimeContext
+from ..artifacts import source_digest
 from ..common import append_workflow_error, stamp_finished
 from ..registry import register_workflow
 from .harness import OptimizeRuntimeHarness, RuntimeHarnessConfig
 from .models import EngineStrategy, RuntimeCandidateRecord, RuntimeOptimizationResult
 from .promotion import candidate_score, choose_winner, promote_candidate
-from .renderer import render_engine, source_hash
+from .renderer import render_engine
 from .strategies import INITIAL_STRATEGIES, SEARCH_STRATEGIES, strategy_key
 from .prompting import generate_strategy_batch
 
@@ -35,7 +36,6 @@ class OptimizeRuntimeAgent(BaseAgent):
         self.candidate_dir.mkdir(parents=True, exist_ok=True)
         harness_config = RuntimeHarnessConfig.from_env(
             target_dir=context.config.target_dir,
-            submission_root=self.submission_root,
         )
         self.harness = harness or OptimizeRuntimeHarness(harness_config, context.workspace.logs_dir / "optimize_runtime")
         self.max_llm_rounds = int(os.environ.get("OPTIMIZE_RUNTIME_LLM_ROUNDS", "2"))
@@ -101,7 +101,7 @@ class OptimizeRuntimeAgent(BaseAgent):
                 else:
                     self.log("promoted engine final correctness smoke passed")
                     if self.harness.config.run_benchmark:
-                        final_benchmark = self.harness.run_quick_benchmark(
+                        final_benchmark = self.harness.run_benchmark_suite(
                             self.submission_root / "engine.py",
                             label="promoted",
                         )
@@ -161,7 +161,7 @@ class OptimizeRuntimeAgent(BaseAgent):
         strategy: EngineStrategy,
     ) -> RuntimeCandidateRecord:
         source = render_engine(strategy)
-        digest = source_hash(source)
+        digest = source_digest(source, length=16)
         path = self.candidate_dir / candidate_id / "engine.py"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(source, encoding="utf-8")
@@ -206,7 +206,7 @@ class OptimizeRuntimeAgent(BaseAgent):
         self.log(f"correctness passed: {candidate.candidate_id}")
         if self.harness.config.run_stress:
             self.log(f"stress correctness gate: {candidate.candidate_id}")
-            stress = self.harness.run_stress_correctness(engine_path, label=candidate.candidate_id)
+            stress = self.harness.run_correctness(engine_path, label=candidate.candidate_id, case="stress")
             candidate.stress_passed = stress.passed
             if not stress.passed:
                 candidate.failure_stage = "stress"
@@ -221,14 +221,13 @@ class OptimizeRuntimeAgent(BaseAgent):
                 self.log(f"benchmark skipped for bootstrap candidate: {candidate.candidate_id}")
                 return
             self.log(f"benchmark: {candidate.candidate_id}")
-            benchmark = self.harness.run_quick_benchmark(engine_path, label=candidate.candidate_id)
+            benchmark = self.harness.run_benchmark_suite(engine_path, label=candidate.candidate_id)
             if not benchmark.passed or benchmark.benchmark is None:
                 candidate.failure_stage = "benchmark"
                 candidate.failure_summary = benchmark.failure_summary
                 self.log(f"benchmark failed: {candidate.candidate_id}: {benchmark.failure_summary}")
                 return
             candidate.benchmark = benchmark.benchmark
-            candidate.peak_memory_mb = benchmark.benchmark.peak_memory_mb
             self.log(
                 "benchmark passed: "
                 f"{candidate.candidate_id} "

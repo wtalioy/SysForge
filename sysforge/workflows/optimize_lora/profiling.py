@@ -6,7 +6,6 @@ from pathlib import Path
 
 from ...integrations import ncu
 from ...integrations.workspace import Workspace
-from ..profiling.analysis import aggregate_per_metric
 from .harness import HarnessConfig
 
 
@@ -39,7 +38,7 @@ def _metric_value(per_metric: dict[str, dict[str, object]], name: str) -> float 
 
 
 def summarize_profile(rows: list[dict[str, str]], *, shape_d: int) -> ProfileSummary:
-    per_metric = aggregate_per_metric(rows, PROFILE_METRICS)
+    per_metric = ncu.aggregate_per_metric(rows, PROFILE_METRICS)
     kernel_counts: dict[str, int] = {}
     for row in rows:
         kernel = (
@@ -91,7 +90,6 @@ class CandidateProfiler:
         script = f"""from __future__ import annotations
 
 import importlib
-import json
 import sys
 
 import torch
@@ -125,5 +123,5 @@ torch.cuda.synchronize()
             PROFILE_METRICS,
         )
         if not result.ok:
-            return ProfileSummary(shape_d=shape_d, kernel_count=0, error=result.stderr or result.stdout)
+            return ProfileSummary(shape_d=shape_d, kernel_count=0, error=ncu.format_error(result))
         return summarize_profile(result.rows, shape_d=shape_d)

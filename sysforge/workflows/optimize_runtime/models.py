@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from time import strftime
 from typing import Any
 
+from ...time_utils import workflow_timestamp
 from ..base import WorkflowResult
 
 
@@ -91,10 +91,9 @@ class RuntimeCandidateRecord:
     correctness_passed: bool = False
     stress_passed: bool = False
     benchmark: RuntimeBenchmarkSummary | None = None
-    peak_memory_mb: float = 0.0
     failure_stage: str = ""
     failure_summary: str = ""
-    created_at: str = field(default_factory=lambda: strftime("%Y-%m-%dT%H:%M:%S"))
+    created_at: str = field(default_factory=workflow_timestamp)
 
 
 @dataclass

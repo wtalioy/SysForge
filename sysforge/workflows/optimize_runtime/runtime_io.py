@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -24,6 +25,11 @@ def load_engine_module(engine_path: str):
     return module
 
 
-def load_json_file(path: str | Path) -> dict:
-    with Path(path).open() as handle:
-        return json.load(handle)
+def read_json_file(path: str | Path) -> Any:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def write_json_file(path: str | Path, payload: Any) -> None:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
+from ..artifacts import source_digest
 from .models import EngineStrategy
 from .templates import ENGINE_TEMPLATE
 
@@ -12,10 +12,6 @@ FORBIDDEN_SOURCE_MARKERS = (
     "ReferenceModel",
     "optimize_runtime.reference_model",
 )
-
-
-def source_hash(source: str) -> str:
-    return hashlib.sha256(source.encode("utf-8")).hexdigest()[:16]
 
 
 def render_engine(strategy: EngineStrategy) -> str:
@@ -34,4 +30,4 @@ def write_engine(path: Path, strategy: EngineStrategy) -> str:
     source = render_engine(strategy)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source, encoding="utf-8")
-    return source_hash(source)
+    return source_digest(source, length=16)

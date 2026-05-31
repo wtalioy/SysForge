@@ -70,10 +70,6 @@ FALLBACK = ProbeSpec(
 )
 
 
-def get_spec(name: str) -> ProbeSpec | None:
-    return CATALOG.get(name)
-
-
 def strategy_for(target: str) -> ProbeSpec:
     spec = CATALOG.get(target)
     if spec is not None:

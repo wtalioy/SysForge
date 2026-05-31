@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from ...agent.prompts import json_prompt
+from .families import family_concrete_variants_json, family_parameters_json, render_family_template
 from .models import CandidateFamilyDraft, ParameterSpec
 
 
@@ -130,11 +130,11 @@ def _family_json_prompt(prompt_name: str, **kwargs) -> CandidateFamilyDraft:
             total_variants = len(family.concrete_variants)
             rendered_sources: set[str] = set()
             for index, mapping in enumerate(family.concrete_variants):
-                rendered = family.source_template
-                for name, value in mapping.items():
-                    text = "true" if isinstance(value, bool) and value else "false" if isinstance(value, bool) else str(value)
-                    rendered = rendered.replace(f"{{{{{name}}}}}", text)
-                    rendered = rendered.replace(f"{{{name}}}", text)
+                try:
+                    rendered = render_family_template(family.source_template, mapping)
+                except ValueError as exc:
+                    problems.append(f"concrete_variants[{index}] {exc}")
+                    continue
                 if rendered == family.source_template:
                     problems.append(f"concrete_variants[{index}] does not affect source_template")
                 body_value = mapping.get("FORWARD_BODY")
@@ -149,7 +149,11 @@ def _family_json_prompt(prompt_name: str, **kwargs) -> CandidateFamilyDraft:
             total_variants = 1
             for parameter in family.parameters:
                 total_variants *= max(1, len(parameter.values))
-                if f"{{{{{parameter.name}}}}}" not in family.source_template and f"{{{parameter.name}}}" not in family.source_template:
+                if f"{{{parameter.name}}}" in family.source_template:
+                    problems.append(
+                        f"parameter {parameter.name} uses unsupported single-brace placeholder; use double braces"
+                    )
+                if f"{{{{{parameter.name}}}}}" not in family.source_template:
                     if parameter.name == "FORWARD_BODY":
                         problems.append("parameter FORWARD_BODY never appears in source_template; for body-first families, source_template should usually be exactly {{FORWARD_BODY}}")
                     else:
@@ -207,19 +211,8 @@ def repair_candidate_family(
         family_name=family.family_name,
         family_rationale=family.rationale,
         source_template=family.source_template,
-        family_parameters=json.dumps(
-            [
-                {
-                    "name": parameter.name,
-                    "values": list(parameter.values),
-                    "default": parameter.default,
-                    "description": parameter.description,
-                }
-                for parameter in family.parameters
-            ],
-            indent=2,
-        ),
-        family_concrete_variants=json.dumps(list(family.concrete_variants), indent=2),
+        family_parameters=family_parameters_json(family),
+        family_concrete_variants=family_concrete_variants_json(family),
         parameter_values=parameter_values,
         candidate_source=candidate_source,
         failure_stage=failure_stage,
@@ -244,19 +237,8 @@ def revise_candidate_family(
         family_name=family.family_name,
         family_rationale=family.rationale,
         source_template=family.source_template,
-        family_parameters=json.dumps(
-            [
-                {
-                    "name": parameter.name,
-                    "values": list(parameter.values),
-                    "default": parameter.default,
-                    "description": parameter.description,
-                }
-                for parameter in family.parameters
-            ],
-            indent=2,
-        ),
-        family_concrete_variants=json.dumps(list(family.concrete_variants), indent=2),
+        family_parameters=family_parameters_json(family),
+        family_concrete_variants=family_concrete_variants_json(family),
         incumbent_source=incumbent_source,
         round_feedback=round_feedback,
         tried_family_names=", ".join(tried_family_names) if tried_family_names else "(none)",

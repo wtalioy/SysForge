@@ -1,21 +1,21 @@
 from __future__ import annotations
 
-import itertools
 import json
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
-from time import strftime
 from typing import Callable
 import torch
 from ...agent import SearchAgent, StoppingPolicy
 from ...agent.llm import has_llm_config
 from ...runtime import RuntimeContext
+from ...time_utils import workflow_timestamp
+from ..artifacts import source_digest
 from ..common import stamp_finished
 from ..registry import register_workflow
 from . import prompting as family_agent
-from .build import BASELINE_SOURCE, CandidateBuilder, source_hash
+from .build import CandidateBuilder
+from .families import expand_family_mappings, render_family_source
 from .harness import OptimizeLoraHarness, HarnessConfig
 from .models import (
     CandidateFamilyDraft,
@@ -27,13 +27,10 @@ from .models import (
 from .profiling import CandidateProfiler
 from .promotion import TIER2
 from .round_evaluator import RoundEvaluator
-from .templates import extract_forward_body, render_source_from_body
+from .templates import BASELINE_SOURCE, extract_forward_body
 
 
 ARTIFACT_NAME = "optimized_lora.cu"
-_PLACEHOLDER_RE = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
-_SINGLE_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
-_RAW_DOUBLE_BRACE_RE = re.compile(r"\{\{.*?\}\}")
 
 
 @dataclass(frozen=True)
@@ -174,8 +171,8 @@ class OptimizeLoraAgent(SearchAgent):
             source_path=str(Path.cwd() / ARTIFACT_NAME),
             entrypoint_name="forward",
             origin="bootstrap",
-            created_at=strftime("%Y-%m-%dT%H:%M:%S"),
-            updated_at=strftime("%Y-%m-%dT%H:%M:%S"),
+            created_at=workflow_timestamp(),
+            updated_at=workflow_timestamp(),
         )
         baseline.evaluation = self.harness.reference_evaluation(tier_name=TIER2, shapes=self.harness.tier_shapes(TIER2))
         baseline.comparison_summary = "Reference PyTorch implementation established as the virtual incumbent."
@@ -289,7 +286,7 @@ class OptimizeLoraAgent(SearchAgent):
             return
         for _ in range(self.config.max_llm_rounds):
             round_index = self.begin_round(family.family_name)
-            planned_variants = len(self._iter_family_mappings(family))
+            planned_variants = len(expand_family_mappings(family))
             self.log(
                 f"round {round_index} started "
                 f"(family={family.family_name}, planned_variants={planned_variants}, "
@@ -491,7 +488,7 @@ class OptimizeLoraAgent(SearchAgent):
 
     def _seen_source_hashes(self) -> set[str]:
         hashes = {candidate.source_hash for candidate in self.result.candidates if candidate.source_hash}
-        hashes.add(source_hash(BASELINE_SOURCE))
+        hashes.add(source_digest(BASELINE_SOURCE))
         return hashes
 
     def _is_recoverable_llm_failure(self, exc: Exception) -> bool:
@@ -536,37 +533,12 @@ class OptimizeLoraAgent(SearchAgent):
             expected_bottleneck="launch_bound",
         )
 
-    def _iter_family_mappings(self, family: CandidateFamilyDraft) -> list[dict[str, object]]:
-        if family.concrete_variants:
-            return [dict(mapping) for mapping in family.concrete_variants]
-        param_specs = list(family.parameters)
-        combinations = list(itertools.product(*([spec.values for spec in param_specs] if param_specs else [()])))
-        if not param_specs:
-            return [{} for _ in combinations]
-        default_values = tuple(
-            spec.default if spec.default in spec.values else spec.values[min(len(spec.values) // 2, len(spec.values) - 1)]
-            for spec in param_specs
-        )
-        ordered = ([default_values] if default_values in combinations else []) + [
-            values for values in combinations if values != default_values
-        ]
-        seen: set[tuple[tuple[str, object], ...]] = set()
-        mappings: list[dict[str, object]] = []
-        for values in ordered:
-            mapping = {spec.name: value for spec, value in zip(param_specs, values, strict=True)}
-            signature = tuple(sorted(mapping.items()))
-            if signature in seen:
-                continue
-            seen.add(signature)
-            mappings.append(mapping)
-        return mappings
-
     def _instantiate_family(self, family: CandidateFamilyDraft, *, round_index: int) -> list[ConcreteCandidate]:
         candidates: list[ConcreteCandidate] = []
         seen_source_hashes = self._seen_source_hashes()
-        for mapping in self._iter_family_mappings(family):
-            source = self._render_family_source(family.source_template, mapping)
-            digest = source_hash(source)
+        for mapping in expand_family_mappings(family):
+            source = render_family_source(family.source_template, mapping)
+            digest = source_digest(source)
             if digest in seen_source_hashes:
                 continue
             seen_source_hashes.add(digest)
@@ -582,21 +554,6 @@ class OptimizeLoraAgent(SearchAgent):
                 break
         return candidates
 
-    def _render_family_source(self, source_template: str, parameter_values: dict[str, object]) -> str:
-        rendered = source_template
-        for name, value in parameter_values.items():
-            text = "true" if isinstance(value, bool) and value else "false" if isinstance(value, bool) else str(value)
-            rendered = rendered.replace(f"{{{{{name}}}}}", text)
-            rendered = rendered.replace(f"{{{name}}}", text)
-        unresolved = _PLACEHOLDER_RE.findall(rendered)
-        unresolved.extend(name for name in _SINGLE_PLACEHOLDER_RE.findall(rendered) if name in parameter_values)
-        unresolved.extend(_RAW_DOUBLE_BRACE_RE.findall(rendered))
-        if unresolved:
-            raise ValueError(f"unresolved family parameters: {', '.join(sorted(set(unresolved)))}")
-        if "PYBIND11_MODULE" not in rendered:
-            return render_source_from_body(rendered)
-        return rendered
-
     def _register_concrete_candidate(self, concrete: ConcreteCandidate, *, round_index: int) -> CandidateRecord:
         record = self.builder.register_candidate(
             candidate_id=concrete.candidate_id,
@@ -606,7 +563,7 @@ class OptimizeLoraAgent(SearchAgent):
         )
         record.origin = "seed_family" if round_index == 1 else "family_revision"
         record.parameter_values = dict(concrete.parameter_values)
-        record.created_at = strftime("%Y-%m-%dT%H:%M:%S")
+        record.created_at = workflow_timestamp()
         record.updated_at = record.created_at
         return record
 

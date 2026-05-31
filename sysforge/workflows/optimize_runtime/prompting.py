@@ -4,15 +4,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ...agent.prompts import json_prompt
 from .models import EngineStrategy
 from .strategies import strategy_key
 
 
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
-
-
-def _read_prompt(name: str) -> str:
-    return (PROMPT_DIR / name).read_text(encoding="utf-8")
 
 
 def generate_strategy_batch(
@@ -21,18 +18,16 @@ def generate_strategy_batch(
     strategy_catalog: list[dict[str, Any]] | None = None,
     max_strategies: int = 1,
 ) -> list[EngineStrategy]:
-    from ...agent.llm import chat_json
-
     strategy_catalog = strategy_catalog or []
-    payload = chat_json(
-        _read_prompt("generate_strategy_batch.txt").format(
-            evidence_json=json.dumps(evidence, indent=2, sort_keys=True),
-            strategy_catalog_json=json.dumps(strategy_catalog, indent=2, sort_keys=True),
-            max_strategies=max_strategies,
-        ),
-        system=_read_prompt("json_system.txt"),
+    payload = json_prompt(
+        PROMPT_DIR,
+        "generate_strategy_batch.txt",
+        system_name="json_system.txt",
         temperature=0.2,
         retries=1,
+        evidence_json=json.dumps(evidence, indent=2, sort_keys=True),
+        strategy_catalog_json=json.dumps(strategy_catalog, indent=2, sort_keys=True),
+        max_strategies=max_strategies,
     )
     return _parse_strategy_payload(payload, max_strategies=max_strategies, strategy_catalog=strategy_catalog)
 

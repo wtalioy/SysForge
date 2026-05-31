@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import shutil
@@ -13,12 +12,9 @@ import torch
 from torch.utils.cpp_extension import load
 
 from ...integrations.workspace import Workspace
+from ...time_utils import workflow_timestamp
+from ..artifacts import source_digest
 from .models import CandidateCompileResult, CandidateRecord
-from .templates import BASELINE_SOURCE
-
-
-def source_hash(source: str) -> str:
-    return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
 def module_name_for_hash(source_digest: str) -> str:
@@ -76,7 +72,7 @@ class CandidateBuilder:
         source: str,
         entrypoint_name: str = "forward",
     ) -> CandidateRecord:
-        digest = source_hash(source)
+        digest = source_digest(source)
         source_path = self.workspace.candidate_source_path(digest)
         if not source_path.exists():
             source_path.write_text(source, encoding="utf-8")
@@ -159,7 +155,7 @@ class CandidateBuilder:
         backend = "cuda" if with_cuda else "cpp"
         _append_log(
             log_path,
-            f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] build_start module={candidate.module_name} "
+            f"[{workflow_timestamp()}] build_start module={candidate.module_name} "
             f"source={candidate.source_path} build_source={build_source_path} backend={backend} build_dir={build_dir}",
         )
         started = time.monotonic()
@@ -178,7 +174,7 @@ class CandidateBuilder:
             error = f"{type(exc).__name__}: {exc}"
             _append_log(
                 log_path,
-                f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] build_failed {error}\n{traceback.format_exc()}",
+                f"[{workflow_timestamp()}] build_failed {error}\n{traceback.format_exc()}",
             )
             result = CandidateCompileResult(
                 status="failed",
@@ -194,7 +190,7 @@ class CandidateBuilder:
             return result, None
 
         duration_s = time.monotonic() - started
-        _append_log(log_path, f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] build_ok module={candidate.module_name} duration_s={duration_s:.3f}")
+        _append_log(log_path, f"[{workflow_timestamp()}] build_ok module={candidate.module_name} duration_s={duration_s:.3f}")
         result = CandidateCompileResult(
             status="built",
             source_hash=candidate.source_hash,

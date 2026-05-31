@@ -59,8 +59,6 @@ def compare_tier_summaries(
     noise_guard_pct: float = DEFAULT_NOISE_GUARD_PCT,
     noise_guard_ms: float = DEFAULT_NOISE_GUARD_MS,
     max_regression_pct: float = DEFAULT_MAX_REGRESSION_PCT,
-    challenger_key: str = "",
-    incumbent_key: str = "",
 ) -> PromotionDecision:
     threshold_pct = threshold_pct_for_summaries(
         challenger,

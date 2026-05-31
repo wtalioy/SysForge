@@ -6,6 +6,7 @@ from pathlib import Path
 from ...agent.llm import LLMError
 from ...agent.prompts import cuda_prompt_file, json_prompt
 from ...runtime import Config
+from ..common import tail_text
 
 
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
@@ -68,8 +69,8 @@ def fix_compile(ctx: ProfilingPromptContext, target, source, compile_result, his
         ) or "  (none)",
         target=target,
         cmd=" ".join(compile_result.cmd),
-        stdout=(compile_result.stdout or "")[-3000:],
-        stderr=(compile_result.stderr or "")[-3000:],
+        stdout=tail_text(compile_result.stdout or "", 3000),
+        stderr=tail_text(compile_result.stderr or "", 3000),
         source=source,
     )
 
@@ -85,8 +86,8 @@ def fix_runtime(ctx: ProfilingPromptContext, target, source, run_result, history
         rc=run_result.rc,
         wallclock_s=f"{run_result.wallclock_s:.3f}",
         timed_out=str(run_result.timed_out),
-        stdout=(run_result.stdout or "")[-3000:],
-        stderr=(run_result.stderr or "")[-3000:],
+        stdout=tail_text(run_result.stdout or "", 3000),
+        stderr=tail_text(run_result.stderr or "", 3000),
         source=source,
     )
 
@@ -105,7 +106,7 @@ def fix_implausible(ctx: ProfilingPromptContext, target, spec, source, stdout, v
         plausible_min=spec.plausible_min,
         plausible_max=spec.plausible_max,
         reason=reason,
-        stdout=(stdout or "")[-3000:],
+        stdout=tail_text(stdout or "", 3000),
         source=source,
     )
 
@@ -118,7 +119,7 @@ def extract(ctx: ProfilingPromptContext, target, spec, stdout, parse_hint):
             target=target,
             unit=spec.unit,
             parse_hint=parse_hint or "(none given)",
-            stdout=(stdout or "")[-3000:],
+            stdout=tail_text(stdout or "", 3000),
         )
         if obj:
             return obj
@@ -140,8 +141,8 @@ def fix_reference_compile(source: str, compile_result) -> dict:
         "fix_compile_error.txt",
         target="gemm_reference",
         cmd=" ".join(compile_result.cmd),
-        stdout=compile_result.stdout[-2000:],
-        stderr=compile_result.stderr[-2000:],
+        stdout=tail_text(compile_result.stdout, 2000),
+        stderr=tail_text(compile_result.stderr, 2000),
         source=source,
         history="(none)",
     )

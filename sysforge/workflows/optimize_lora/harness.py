@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import torch
 
+from ..common import spread_pct
 from .models import BenchmarkResult, BenchmarkTierSummary, CandidateEvaluation, ShapeBenchmarkResult
 from .promotion import geometric_mean, summarize_regression_pct
 
@@ -145,7 +146,6 @@ def benchmark_forward(
     min_ms = samples[0] if samples else 0.0
     max_ms = samples[-1] if samples else 0.0
     median_ms = samples[len(samples) // 2] if samples else 0.0
-    spread_pct = (((max_ms - min_ms) / max(median_ms, 1e-9)) * 100.0) if samples else 0.0
     return BenchmarkResult(
         shape_d=shape_d,
         warmup=warmup,
@@ -153,7 +153,7 @@ def benchmark_forward(
         median_ms=median_ms,
         min_ms=min_ms,
         max_ms=max_ms,
-        spread_pct=spread_pct,
+        spread_pct=spread_pct(samples),
     )
 
 
@@ -163,7 +163,6 @@ class OptimizeLoraHarness:
         self._fixture_cache: dict[tuple[int, int], InputFixture] = {}
         self._reference_output_cache: dict[int, torch.Tensor] = {}
         self._timing_cache: dict[tuple[str, int, int, int], BenchmarkResult] = {}
-        self._timing_call_counts: dict[tuple[str, int, int, int], int] = {}
 
     def prepare_fixture(self, shape_d: int | None = None) -> InputFixture:
         prepared_shape = shape_d or self.config.validation_shape
@@ -210,11 +209,7 @@ class OptimizeLoraHarness:
             iters=iters,
         )
         self._timing_cache[key] = result
-        self._timing_call_counts[key] = self._timing_call_counts.get(key, 0) + 1
         return result
-
-    def timing_call_count(self, cache_key: str, *, shape_d: int, warmup: int, iters: int) -> int:
-        return self._timing_call_counts.get((cache_key, shape_d, warmup, iters), 0)
 
     def reference_evaluation(self, *, tier_name: str, shapes: tuple[int, ...], warmup: int | None = None, iters: int | None = None) -> CandidateEvaluation:
         summary = self.evaluate_tier(
@@ -312,28 +307,3 @@ class OptimizeLoraHarness:
         summary.worst_regression_pct = summarize_regression_pct(summary)
         summary.noise_guard_pct = max((row.spread_pct for row in shape_results), default=0.0)
         return summary
-
-    def evaluate_batch_tier(
-        self,
-        entrypoints: dict[str, object],
-        *,
-        tier_name: str,
-        incumbent_key: str | None = None,
-        incumbent_forward=None,
-        warmup: int | None = None,
-        iters: int | None = None,
-    ) -> dict[str, BenchmarkTierSummary]:
-        results: dict[str, BenchmarkTierSummary] = {}
-        shapes = self.tier_shapes(tier_name)
-        for candidate_key, forward_fn in entrypoints.items():
-            results[candidate_key] = self.evaluate_tier(
-                candidate_key,
-                forward_fn,
-                tier_name=tier_name,
-                shapes=shapes,
-                incumbent_key=incumbent_key,
-                incumbent_forward=incumbent_forward,
-                warmup=warmup,
-                iters=iters,
-            )
-        return results

@@ -1,12 +1,20 @@
 from __future__ import annotations
 
-import statistics
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
 
 import torch
 
-from .runtime_io import load_engine_module, load_json_file, resolve_device
+from ..common import median_float, spread_pct
+from .events import decode_event, prefill_event, random_token_ids, remove_event
+from .models import RuntimeBenchmarkSummary
+from .runtime_io import load_engine_module, read_json_file, resolve_device
+
+
+PUBLIC_CASE_NAMES = ("prefill", "decode", "mixed")
+ROBUST_CASE_NAMES = ("varied_prefill", "long_decode", "churn")
 
 
 @dataclass
@@ -77,31 +85,20 @@ def _run_timed_events(engine, events: list[dict], device: str):
 
 def _build_prefill_events(batch_size, prompt_len, vocab_size, device):
     request_ids = list(range(batch_size))
-    input_ids = [
-        torch.randint(0, vocab_size, (prompt_len,), dtype=torch.long, device=device)
-        for _ in range(batch_size)
-    ]
-
-    return [
-        {"op": "prefill", "request_ids": request_ids, "input_ids": input_ids},
-        {"op": "remove", "request_ids": request_ids},
-    ]
+    input_ids = [random_token_ids(vocab_size, prompt_len, device) for _ in range(batch_size)]
+    return [prefill_event(request_ids, input_ids), remove_event(request_ids)]
 
 
 def _build_decode_events(batch_size, prompt_len, decode_steps, vocab_size, device):
     request_ids = list(range(batch_size))
-    input_ids = [
-        torch.randint(0, vocab_size, (prompt_len,), dtype=torch.long, device=device)
-        for _ in range(batch_size)
-    ]
+    input_ids = [random_token_ids(vocab_size, prompt_len, device) for _ in range(batch_size)]
 
-    events = [{"op": "prefill", "request_ids": request_ids, "input_ids": input_ids}]
+    events = [prefill_event(request_ids, input_ids)]
 
     for _ in range(decode_steps):
-        token_ids = torch.randint(0, vocab_size, (batch_size,), dtype=torch.long, device=device)
-        events.append({"op": "decode", "request_ids": request_ids, "token_ids": token_ids})
+        events.append(decode_event(request_ids, random_token_ids(vocab_size, batch_size, device)))
 
-    events.append({"op": "remove", "request_ids": request_ids})
+    events.append(remove_event(request_ids))
     return events
 
 
@@ -128,25 +125,21 @@ def _build_mixed_events(vocab_size, device):
             request_ids = list(range(next_request_id, next_request_id + count))
             next_request_id += count
             active.update(request_ids)
-            input_ids = [
-                torch.randint(0, vocab_size, (prompt_len,), dtype=torch.long, device=device)
-                for _ in request_ids
-            ]
-            events.append({"op": "prefill", "request_ids": request_ids, "input_ids": input_ids})
+            input_ids = [random_token_ids(vocab_size, prompt_len, device) for _ in request_ids]
+            events.append(prefill_event(request_ids, input_ids))
 
         elif op == "decode":
             request_ids = sorted(active)[:count]
-            token_ids = torch.randint(0, vocab_size, (len(request_ids),), dtype=torch.long, device=device)
-            events.append({"op": "decode", "request_ids": request_ids, "token_ids": token_ids})
+            events.append(decode_event(request_ids, random_token_ids(vocab_size, len(request_ids), device)))
 
         elif op == "remove":
             request_ids = sorted(active)[:count]
             for rid in request_ids:
                 active.remove(rid)
-            events.append({"op": "remove", "request_ids": request_ids})
+            events.append(remove_event(request_ids))
 
     if active:
-        events.append({"op": "remove", "request_ids": sorted(active)})
+        events.append(remove_event(sorted(active)))
 
     return events
 
@@ -154,28 +147,18 @@ def _build_mixed_events(vocab_size, device):
 def _build_varied_prefill_events(vocab_size, device):
     request_ids = [101, 7, 42, 1009, 3, 88]
     lengths = [17, 64, 9, 96, 33, 128]
-    input_ids = [
-        torch.randint(0, vocab_size, (length,), dtype=torch.long, device=device)
-        for length in lengths
-    ]
-    return [
-        {"op": "prefill", "request_ids": request_ids, "input_ids": input_ids},
-        {"op": "remove", "request_ids": request_ids},
-    ]
+    input_ids = [random_token_ids(vocab_size, length, device) for length in lengths]
+    return [prefill_event(request_ids, input_ids), remove_event(request_ids)]
 
 
 def _build_long_decode_events(batch_size, prompt_len, decode_steps, vocab_size, device):
     request_ids = [1000 + i * 13 for i in range(batch_size)]
-    input_ids = [
-        torch.randint(0, vocab_size, (prompt_len,), dtype=torch.long, device=device)
-        for _ in request_ids
-    ]
-    events = [{"op": "prefill", "request_ids": request_ids, "input_ids": input_ids}]
+    input_ids = [random_token_ids(vocab_size, prompt_len, device) for _ in request_ids]
+    events = [prefill_event(request_ids, input_ids)]
     for step in range(decode_steps):
         step_request_ids = list(reversed(request_ids)) if step % 2 else list(request_ids)
-        token_ids = torch.randint(0, vocab_size, (batch_size,), dtype=torch.long, device=device)
-        events.append({"op": "decode", "request_ids": step_request_ids, "token_ids": token_ids})
-    events.append({"op": "remove", "request_ids": request_ids})
+        events.append(decode_event(step_request_ids, random_token_ids(vocab_size, batch_size, device)))
+    events.append(remove_event(request_ids))
     return events
 
 
@@ -187,30 +170,17 @@ def _build_churn_events(vocab_size, device):
         request_ids = [next_request_id + offset * 17 for offset in range(3)]
         next_request_id += 100
         active.extend(request_ids)
-        input_ids = [
-            torch.randint(0, vocab_size, (prompt_len + offset * 3,), dtype=torch.long, device=device)
-            for offset in range(3)
-        ]
-        events.append({"op": "prefill", "request_ids": request_ids, "input_ids": input_ids})
+        input_ids = [random_token_ids(vocab_size, prompt_len + offset * 3, device) for offset in range(3)]
+        events.append(prefill_event(request_ids, input_ids))
         decode_ids = list(reversed(active[-min(len(active), 6):]))
-        token_ids = torch.randint(0, vocab_size, (len(decode_ids),), dtype=torch.long, device=device)
-        events.append({"op": "decode", "request_ids": decode_ids, "token_ids": token_ids})
+        events.append(decode_event(decode_ids, random_token_ids(vocab_size, len(decode_ids), device)))
         if round_index % 2 == 1 and active:
             remove_ids = active[:2]
             active = active[2:]
-            events.append({"op": "remove", "request_ids": remove_ids})
+            events.append(remove_event(remove_ids))
     if active:
-        events.append({"op": "remove", "request_ids": active})
+        events.append(remove_event(active))
     return events
-
-
-def _spread_pct(values: list[float]) -> float:
-    if len(values) < 2:
-        return 0.0
-    median_value = float(statistics.median(values))
-    if median_value == 0.0:
-        return 0.0
-    return (max(values) - min(values)) / median_value * 100.0
 
 
 def _run_benchmark_case(case_name, engine_module, model_config, weight_dir, events, device, warmup, repeat):
@@ -239,34 +209,41 @@ def _run_benchmark_case(case_name, engine_module, model_config, weight_dir, even
         tokens_per_second_samples=token_samples,
         decode_tokens_per_second_samples=decode_samples,
         spread_pct={
-            "elapsed_ms": _spread_pct(elapsed_samples),
-            "tokens_per_second": _spread_pct(token_samples),
-            "decode_tokens_per_second": _spread_pct(decode_samples),
+            "elapsed_ms": spread_pct(elapsed_samples),
+            "tokens_per_second": spread_pct(token_samples),
+            "decode_tokens_per_second": spread_pct(decode_samples),
         },
     )
 
 
 def _build_benchmark_cases(case_mode: str, vocab_size: int, device: str):
-    cases = {
-        "prefill": _build_prefill_events(batch_size=4, prompt_len=128, vocab_size=vocab_size, device=device),
-        "decode": _build_decode_events(batch_size=8, prompt_len=32, decode_steps=16, vocab_size=vocab_size, device=device),
-        "mixed": _build_mixed_events(vocab_size=vocab_size, device=device),
+    builders = {
+        "prefill": lambda: _build_prefill_events(batch_size=4, prompt_len=128, vocab_size=vocab_size, device=device),
+        "decode": lambda: _build_decode_events(
+            batch_size=8,
+            prompt_len=32,
+            decode_steps=16,
+            vocab_size=vocab_size,
+            device=device,
+        ),
+        "mixed": lambda: _build_mixed_events(vocab_size=vocab_size, device=device),
+        "varied_prefill": lambda: _build_varied_prefill_events(vocab_size=vocab_size, device=device),
+        "long_decode": lambda: _build_long_decode_events(
+            batch_size=6,
+            prompt_len=48,
+            decode_steps=32,
+            vocab_size=vocab_size,
+            device=device,
+        ),
+        "churn": lambda: _build_churn_events(vocab_size=vocab_size, device=device),
     }
+    return {case_name: builders[case_name]() for case_name in benchmark_case_names(case_mode)}
+
+
+def benchmark_case_names(case_mode: str) -> tuple[str, ...]:
     if case_mode == "robust":
-        cases.update(
-            {
-                "varied_prefill": _build_varied_prefill_events(vocab_size=vocab_size, device=device),
-                "long_decode": _build_long_decode_events(
-                    batch_size=6,
-                    prompt_len=48,
-                    decode_steps=32,
-                    vocab_size=vocab_size,
-                    device=device,
-                ),
-                "churn": _build_churn_events(vocab_size=vocab_size, device=device),
-            }
-        )
-    return cases
+        return (*PUBLIC_CASE_NAMES, *ROBUST_CASE_NAMES)
+    return PUBLIC_CASE_NAMES
 
 
 def run_benchmark(
@@ -282,7 +259,7 @@ def run_benchmark(
     device = resolve_device(device)
     torch.manual_seed(0)
 
-    model_config = load_json_file(model_config_path)
+    model_config = read_json_file(model_config_path)
 
     vocab_size = int(model_config["vocab_size"])
     engine_module = load_engine_module(engine_path)
@@ -302,3 +279,92 @@ def run_benchmark(
         )
         for case_name, events in cases.items()
     ]
+
+
+def parse_benchmark_file(path: Path, *, required_cases: set[str] | None = None) -> RuntimeBenchmarkSummary:
+    try:
+        payload = read_json_file(path)
+    except ValueError as exc:
+        raise ValueError(f"benchmark JSON file parse failed: {exc}") from exc
+    return parse_benchmark_payload(payload, required_cases=required_cases)
+
+
+def parse_benchmark_payload(payload: Any, *, required_cases: set[str] | None = None) -> RuntimeBenchmarkSummary:
+    if not isinstance(payload, list):
+        raise ValueError("benchmark JSON payload was not a list")
+    required_cases = required_cases or set(PUBLIC_CASE_NAMES)
+    by_case: dict[str, dict[str, Any]] = {str(item.get("case_name")): item for item in payload}
+    if not required_cases.issubset(set(by_case)):
+        missing = ", ".join(sorted(required_cases - set(by_case)))
+        extra = ", ".join(sorted(set(by_case) - required_cases))
+        raise ValueError(f"benchmark cases mismatch; missing={missing or 'none'} extra={extra or 'none'}")
+    if len(by_case) != len(payload):
+        raise ValueError("benchmark JSON payload contains duplicate case names")
+
+    def metric(case_name: str, key: str) -> float:
+        value = by_case.get(case_name, {}).get(key, 0.0)
+        metric_value = float(value or 0.0)
+        if not (metric_value >= 0.0 and metric_value < float("inf")):
+            raise ValueError(f"benchmark metric {case_name}.{key} is not finite")
+        return metric_value
+
+    total_tps_values = [float(item.get("tokens_per_second") or 0.0) for item in payload]
+    peak_values = [float(item.get("peak_memory_mb") or 0.0) for item in payload]
+    case_tps = {case_name: metric(case_name, "tokens_per_second") for case_name in by_case}
+    case_decode_tps = {case_name: metric(case_name, "decode_tokens_per_second") for case_name in by_case}
+    return RuntimeBenchmarkSummary(
+        prefill_tokens_per_second=metric("prefill", "tokens_per_second"),
+        decode_tokens_per_second=metric("decode", "decode_tokens_per_second"),
+        mixed_tokens_per_second=metric("mixed", "tokens_per_second"),
+        total_tokens_per_second=sum(total_tps_values),
+        peak_memory_mb=max(peak_values) if peak_values else 0.0,
+        raw_results=payload,
+        benchmark_runs=[payload],
+        run_count=1,
+        case_tokens_per_second=case_tps,
+        case_decode_tokens_per_second=case_decode_tps,
+    )
+
+
+def aggregate_benchmark_summaries(summaries: list[RuntimeBenchmarkSummary]) -> RuntimeBenchmarkSummary:
+    if not summaries:
+        return RuntimeBenchmarkSummary(run_count=0)
+
+    prefill = [summary.prefill_tokens_per_second for summary in summaries]
+    decode = [summary.decode_tokens_per_second for summary in summaries]
+    mixed = [summary.mixed_tokens_per_second for summary in summaries]
+    total = [summary.total_tokens_per_second for summary in summaries]
+    peak = [summary.peak_memory_mb for summary in summaries]
+    raw_runs = [summary.raw_results for summary in summaries]
+    all_case_names = sorted({case_name for summary in summaries for case_name in summary.case_tokens_per_second})
+    case_tps = {
+        case_name: median_float([summary.case_tokens_per_second.get(case_name, 0.0) for summary in summaries])
+        for case_name in all_case_names
+    }
+    case_decode_tps = {
+        case_name: median_float([summary.case_decode_tokens_per_second.get(case_name, 0.0) for summary in summaries])
+        for case_name in all_case_names
+    }
+    median_mixed = median_float(mixed)
+    selected_index = min(
+        range(len(summaries)),
+        key=lambda index: abs(summaries[index].mixed_tokens_per_second - median_mixed),
+    )
+    return RuntimeBenchmarkSummary(
+        prefill_tokens_per_second=median_float(prefill),
+        decode_tokens_per_second=median_float(decode),
+        mixed_tokens_per_second=median_float(mixed),
+        total_tokens_per_second=median_float(total),
+        peak_memory_mb=max(peak) if peak else 0.0,
+        raw_results=summaries[selected_index].raw_results,
+        benchmark_runs=raw_runs,
+        run_count=len(summaries),
+        spread_pct={
+            "prefill": spread_pct(prefill),
+            "decode": spread_pct(decode),
+            "mixed": spread_pct(mixed),
+            "total": spread_pct(total),
+        },
+        case_tokens_per_second=case_tps,
+        case_decode_tokens_per_second=case_decode_tps,
+    )

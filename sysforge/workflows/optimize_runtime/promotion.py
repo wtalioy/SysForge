@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 
 from .models import RuntimeBenchmarkSummary, RuntimeCandidateRecord
+from .runtime_io import load_engine_module
 
 
 def candidate_score(candidate: RuntimeCandidateRecord) -> tuple[float, float, float, float, float, float]:
@@ -127,10 +127,6 @@ def promote_candidate(candidate: RuntimeCandidateRecord, destination: Path) -> P
 
 
 def smoke_import(engine_path: Path) -> None:
-    spec = importlib.util.spec_from_file_location("promoted_engine_smoke", engine_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"could not load engine spec from {engine_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = load_engine_module(str(engine_path))
     if not hasattr(module, "create_engine"):
         raise AttributeError("promoted engine does not define create_engine")
