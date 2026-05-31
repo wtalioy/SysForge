@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import time
 import traceback
+import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 from time import strftime
 
 
@@ -15,6 +17,23 @@ class RetryBudget:
     @property
     def retries_left(self) -> int:
         return max(0, self.max_retries - self.retries_used)
+
+
+@dataclass
+class CommandResult:
+    status: str
+    command: list[str]
+    returncode: int
+    stdout_path: str
+    stderr_path: str
+    stdout_tail: str = ""
+    stderr_tail: str = ""
+    elapsed_s: float = 0.0
+    failure_summary: str = ""
+
+    @property
+    def passed(self) -> bool:
+        return self.status == "passed"
 
 
 def consume_retry(state: RetryBudget, entry: dict) -> bool:
@@ -46,3 +65,62 @@ def append_workflow_error(result, label: str, exc: Exception, *, include_traceba
     if include_traceback:
         message = f"{message}\n{traceback.format_exc()}"
     result.errors.append(message)
+
+
+def run_logged_command(
+    command: list[str],
+    *,
+    cwd: Path,
+    logs_dir: Path,
+    label: str,
+    timeout_s: float,
+    env: dict[str, str] | None = None,
+) -> CommandResult:
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    stdout_path = logs_dir / f"{label}.stdout.log"
+    stderr_path = logs_dir / f"{label}.stderr.log"
+    start = time.monotonic()
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=cwd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout_s,
+            env=env,
+            check=False,
+        )
+        elapsed = time.monotonic() - start
+        stdout_path.write_text(proc.stdout, encoding="utf-8")
+        stderr_path.write_text(proc.stderr, encoding="utf-8")
+        status = "passed" if proc.returncode == 0 else "failed"
+        failure = "" if proc.returncode == 0 else tail_text(proc.stderr or proc.stdout)
+        return CommandResult(
+            status=status,
+            command=command,
+            returncode=proc.returncode,
+            stdout_path=str(stdout_path),
+            stderr_path=str(stderr_path),
+            stdout_tail=tail_text(proc.stdout),
+            stderr_tail=tail_text(proc.stderr),
+            elapsed_s=elapsed,
+            failure_summary=failure,
+        )
+    except subprocess.TimeoutExpired as exc:
+        elapsed = time.monotonic() - start
+        stdout = exc.stdout or ""
+        stderr = exc.stderr or ""
+        stdout_path.write_text(str(stdout), encoding="utf-8")
+        stderr_path.write_text(str(stderr), encoding="utf-8")
+        return CommandResult(
+            status="failed",
+            command=command,
+            returncode=124,
+            stdout_path=str(stdout_path),
+            stderr_path=str(stderr_path),
+            stdout_tail=tail_text(str(stdout)),
+            stderr_tail=tail_text(str(stderr)),
+            elapsed_s=elapsed,
+            failure_summary=f"timeout after {timeout_s:.1f}s",
+        )

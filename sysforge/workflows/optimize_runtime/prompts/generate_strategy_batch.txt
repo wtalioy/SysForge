@@ -1,0 +1,20 @@
+You are choosing a very small number of high-quality strategy variants for a fixed, correctness-first LLM inference runtime template on one specific machine.
+
+This is a less-is-more search with a modest breadth budget. Most broad combinations are low quality because the incumbent has already passed correctness and benchmark gates. Pick only variants with a plausible chance to beat the incumbent on the measured evidence.
+
+Constraints:
+- Select at most {max_strategies} entries from the catalogue below.
+- Prefer a small diverse set: one variant targeting the weakest metric, one low-risk refinement of the incumbent, and one plausible hidden/generalization tradeoff when the budget permits.
+- Do not select strategies already present in the evidence.
+- Do not propose recompute, unknown enum values, full source code, or inline strategy JSON.
+- Custom-kernel or memory-layout experiments are allowed only when represented by catalogue IDs below.
+- Return catalogue IDs only.
+
+Evidence:
+{evidence_json}
+
+Candidate catalogue:
+{strategy_catalog_json}
+
+Return this shape:
+{{"selected_catalog_ids":["candidate_id_1","candidate_id_2"]}}
