@@ -4,14 +4,16 @@
 # for LLM calls, and SysForge/.env populated with API_KEY/BASE_URL/BASE_MODEL.
 #
 # Usage:
-#   bash tests/live_local_all.sh                # run every group
-#   bash tests/live_local_all.sh group1 group5  # run a subset
+#   bash tests/live_profiling.sh                # run every group
+#   bash tests/live_profiling.sh group1 group5  # run a subset
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-OUT_ROOT="${OUT_ROOT:-/tmp/sysforge_live}"
-mkdir -p "$OUT_ROOT"
+LIVE_ROOT="${LIVE_ROOT:-${OUT_ROOT:-/tmp/sysforge_live}}"
+RUN_ID="${RUN_ID:-$(date +%Y%m%d_%H%M%S)}"
+RUN_DIR="${RUN_DIR:-$LIVE_ROOT/profiling/$RUN_ID}"
+mkdir -p "$RUN_DIR"
 
 export PATH="/usr/local/cuda/bin:$PATH"
 
@@ -27,7 +29,7 @@ if [ "$#" -gt 0 ]; then
   GROUP_ORDER=("$@")
 fi
 
-summary="$OUT_ROOT/summary.txt"
+summary="$RUN_DIR/summary.txt"
 : > "$summary"
 
 for g in "${GROUP_ORDER[@]}"; do
@@ -37,7 +39,7 @@ for g in "${GROUP_ORDER[@]}"; do
     continue
   fi
 
-  gdir="$OUT_ROOT/$g"
+  gdir="$RUN_DIR/$g"
   tgt="$gdir/target"
   ws="$gdir/workspace"
   mkdir -p "$tgt" "$ws"
@@ -89,4 +91,4 @@ done
 
 echo "============================================================"
 echo "Summary written to $summary"
-echo "Per-group artefacts under $OUT_ROOT/<group>/{run.log,output.json,workspace/_sysforge/}"
+echo "Per-group artifacts under $RUN_DIR/<group>/{run.log,output.json,workspace/_sysforge/}"
