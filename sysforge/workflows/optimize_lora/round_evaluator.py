@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ...time_utils import workflow_timestamp
-from . import prompting as family_agent
+from ..common import workflow_timestamp
+from .prompting import revise_candidate_family, repair_candidate_family
 from .harness import REFERENCE_KEY, reference_impl
 from .models import CandidateEvaluation, CandidateFeedback, CandidateRecord, ConcreteCandidate, RoundFeedback
 from .promotion import TIER1, TIER2, TIER3, compare_tier_summaries, select_best_finalist, separation_pct, threshold_pct_for_summaries
@@ -33,7 +33,7 @@ class RoundEvaluator:
                 distinct_variants=len(concrete_candidates),
             )
             if allow_repair:
-                family = family_agent.revise_candidate_family(
+                family = revise_candidate_family(
                     family=family,
                     incumbent_source=self.owner._incumbent_forward_body(),
                     round_feedback=(
@@ -97,7 +97,7 @@ class RoundEvaluator:
                 self.owner._promote_candidate(candidate, reason=decision.reason)
 
         if allow_repair and not ranked and first_failure is not None and first_failure.failure_stage in {"compile", "runtime"}:
-            family = family_agent.repair_candidate_family(
+            family = repair_candidate_family(
                 env_summary=self.owner._env_summary(),
                 family=family,
                 candidate_source=Path(first_failure.source_path).read_text(encoding="utf-8"),

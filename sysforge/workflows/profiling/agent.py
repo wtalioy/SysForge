@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 
 from ...agent import BaseAgent
 from ..base import WorkflowResult
-from ..common import append_workflow_error, stamp_finished
+from ..common import append_workflow_error, workflow_timestamp
 from ..registry import register_workflow
 from .analysis import run_analysis
 from .probe_runner import ProbeCoordinator
@@ -92,5 +92,5 @@ class ProfilingAgent(BaseAgent):
             except Exception as exc:  # noqa: BLE001
                 append_workflow_error(result, "analysis", exc)
 
-        stamp_finished(result)
+        result.finished_at = workflow_timestamp()
         return result

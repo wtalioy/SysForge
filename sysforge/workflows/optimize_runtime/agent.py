@@ -9,7 +9,7 @@ from ...agent import BaseAgent
 from ...agent.llm import has_llm_config
 from ...runtime import RuntimeContext
 from ..artifacts import source_digest
-from ..common import append_workflow_error, stamp_finished
+from ..common import append_workflow_error, workflow_timestamp
 from ..registry import register_workflow
 from .harness import OptimizeRuntimeHarness, RuntimeHarnessConfig
 from .models import EngineStrategy, RuntimeCandidateRecord, RuntimeOptimizationResult
@@ -128,7 +128,7 @@ class OptimizeRuntimeAgent(BaseAgent):
         self.result.candidates = list(self.result.candidates)
         self.result.controller_trace = list(self.trace)
         self.result.artifact_created = (self.submission_root / "engine.py").exists()
-        stamp_finished(self.result)
+        self.result.finished_at = workflow_timestamp()
         self.log(f"finished optimize-runtime (status={self.result.status})")
         return self.result
 

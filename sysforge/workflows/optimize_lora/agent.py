@@ -9,11 +9,10 @@ import torch
 from ...agent import SearchAgent, StoppingPolicy
 from ...agent.llm import has_llm_config
 from ...runtime import RuntimeContext
-from ...time_utils import workflow_timestamp
 from ..artifacts import source_digest
-from ..common import stamp_finished
+from ..common import workflow_timestamp
 from ..registry import register_workflow
-from . import prompting as family_agent
+from .prompting import revise_candidate_family, generate_candidate_family
 from .build import CandidateBuilder
 from .families import expand_family_mappings, render_family_source
 from .harness import OptimizeLoraHarness, HarnessConfig
@@ -155,7 +154,7 @@ class OptimizeLoraAgent(SearchAgent):
             f"tier3={self.result.best_tier3_speedup:.4f})"
         )
         self.result.controller_trace = list(self.trace)
-        stamp_finished(self.result)
+        self.result.finished_at = workflow_timestamp()
         return self.result
 
     def bootstrap_baseline(self) -> None:
@@ -231,7 +230,7 @@ class OptimizeLoraAgent(SearchAgent):
             return fallback
 
         try:
-            return family_agent.revise_candidate_family(
+            return revise_candidate_family(
                 family=family,
                 incumbent_source=incumbent_source,
                 round_feedback=round_feedback,
@@ -247,7 +246,7 @@ class OptimizeLoraAgent(SearchAgent):
                 return recover("llm_revise_unavailable", error)
             self.result.errors.append(f"revise_candidate_family failed: {exc}")
             try:
-                regenerated = family_agent.generate_candidate_family(
+                regenerated = generate_candidate_family(
                     baseline_source=incumbent_source,
                     min_distinct_variants=self.config.min_seed_variants,
                     **self._family_prompt_context(),
@@ -274,7 +273,7 @@ class OptimizeLoraAgent(SearchAgent):
     def run_family_search(self) -> None:
         self.log("requesting initial candidate family from LLM")
         try:
-            family = family_agent.generate_candidate_family(
+            family = generate_candidate_family(
                 baseline_source=self._incumbent_forward_body(),
                 min_distinct_variants=self.config.min_seed_variants,
                 **self._family_prompt_context(),

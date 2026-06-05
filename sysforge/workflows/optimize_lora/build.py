@@ -12,7 +12,7 @@ import torch
 from torch.utils.cpp_extension import load
 
 from ...integrations.workspace import Workspace
-from ...time_utils import workflow_timestamp
+from ..common import workflow_timestamp
 from ..artifacts import source_digest
 from .models import CandidateCompileResult, CandidateRecord
 

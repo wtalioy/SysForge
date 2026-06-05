@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from ...time_utils import workflow_timestamp
+from ..common import workflow_timestamp
 from ..base import WorkflowResult
 
 

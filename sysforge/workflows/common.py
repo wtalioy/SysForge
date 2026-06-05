@@ -5,8 +5,6 @@ import time
 import traceback
 from dataclasses import dataclass, field
 
-from ..time_utils import workflow_timestamp
-
 
 @dataclass
 class RetryBudget:
@@ -69,8 +67,8 @@ def accepted_sample_confidence(base_confidence: float, sample_count: int) -> flo
     return min(0.99, base_confidence + 0.1 * max(0, sample_count - 1))
 
 
-def stamp_finished(result) -> None:
-    result.finished_at = workflow_timestamp()
+def workflow_timestamp() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
 
 
 def append_workflow_error(result, label: str, exc: Exception, *, include_traceback: bool = True) -> None:
