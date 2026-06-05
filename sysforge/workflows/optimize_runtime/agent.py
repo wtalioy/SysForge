@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -10,7 +9,8 @@ from ...runtime import RuntimeContext
 from ..artifacts import source_digest
 from ..common import append_workflow_error, workflow_timestamp
 from ..registry import register_workflow
-from .harness import OptimizeRuntimeHarness, RuntimeHarnessConfig
+from .defaults import DEFAULT_RUNTIME_WORKFLOW_CONFIG, RuntimeWorkflowConfig
+from .harness import OptimizeRuntimeHarness
 from .models import EngineStrategy, RuntimeCandidateRecord, RuntimeOptimizationResult
 from .promotion import candidate_score, choose_winner, promote_candidate
 from .renderer import render_engine
@@ -28,17 +28,18 @@ class OptimizeRuntimeAgent(BaseAgent):
         context: RuntimeContext,
         *,
         harness: OptimizeRuntimeHarness | None = None,
+        workflow_config: RuntimeWorkflowConfig = DEFAULT_RUNTIME_WORKFLOW_CONFIG,
     ) -> None:
         super().__init__(context=context)
         self.submission_root = Path.cwd()
         self.candidate_dir = context.workspace.probes_dir / "optimize_runtime"
         self.candidate_dir.mkdir(parents=True, exist_ok=True)
-        harness_config = RuntimeHarnessConfig.from_env(
-            target_dir=context.config.target_dir,
+        self.harness = harness or OptimizeRuntimeHarness(
+            logs_dir=context.workspace.logs_dir / "optimize_runtime",
+            config=workflow_config,
         )
-        self.harness = harness or OptimizeRuntimeHarness(harness_config, context.workspace.logs_dir / "optimize_runtime")
-        self.max_llm_rounds = int(os.environ.get("OPTIMIZE_RUNTIME_LLM_ROUNDS", "2"))
-        self.max_llm_strategies_per_round = int(os.environ.get("OPTIMIZE_RUNTIME_LLM_STRATEGIES_PER_ROUND", "2"))
+        self.max_llm_rounds = workflow_config.max_llm_rounds
+        self.max_llm_strategies_per_round = workflow_config.max_llm_strategies_per_round
         self.result = RuntimeOptimizationResult(
             workflow="optimize-runtime",
             started_at=context.started_at,
@@ -123,8 +124,8 @@ class OptimizeRuntimeAgent(BaseAgent):
         return self.result
 
     def _prepare_public_weights_if_needed(self) -> None:
-        config_path = self.harness.config.model_config_path
-        weight_path = self.harness.config.weight_dir / "model.pt"
+        config_path = self.harness.model_config_path
+        weight_path = self.harness.weight_dir / "model.pt"
         if weight_path.exists() or not config_path.exists():
             return
         self.log("preparation: generating missing toy weights")

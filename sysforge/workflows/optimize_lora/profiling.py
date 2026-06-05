@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ...integrations import ncu
 from ...integrations.workspace import Workspace
-from .harness import HarnessConfig
+from .defaults import LoraHarnessConfig
 
 
 PROFILE_METRICS = [
@@ -78,7 +78,7 @@ def summarize_profile(rows: list[dict[str, str]], *, shape_d: int) -> ProfileSum
 
 
 class CandidateProfiler:
-    def __init__(self, workspace: Workspace, harness_config: HarnessConfig) -> None:
+    def __init__(self, workspace: Workspace, harness_config: LoraHarnessConfig) -> None:
         self.workspace = workspace
         self.harness_config = harness_config
 

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 import torch
@@ -11,10 +9,11 @@ from ...runtime import RuntimeContext
 from ..artifacts import source_digest
 from ..common import append_workflow_error, workflow_timestamp
 from ..registry import register_workflow
+from .defaults import DEFAULT_LORA_SEARCH_CONFIG, SearchConfig
 from .prompting import revise_candidate_family, generate_candidate_family
 from .build import CandidateBuilder
 from .families import expand_family_mappings, render_family_source
-from .harness import OptimizeLoraHarness, HarnessConfig
+from .harness import OptimizeLoraHarness
 from .models import (
     CandidateFamilyDraft,
     CandidateRecord,
@@ -31,44 +30,6 @@ from .templates import BASELINE_SOURCE, extract_forward_body
 ARTIFACT_NAME = "optimized_lora.cu"
 
 
-@dataclass(frozen=True)
-class SearchConfig:
-    max_family_variants: int = 6
-    min_seed_variants: int = 3
-    max_full_evaluations_per_round: int = 3
-    max_llm_rounds: int = 6
-    final_confirmation_candidates: int = 3
-    max_close_finalists: int = 4
-    clear_winner_speedup: float = 1.05
-    profile_enabled: bool = True
-    final_confirm_warmup: int = 2
-    final_confirm_iters: int = 6
-    tier1_rerun_warmup: int = 2
-    tier1_rerun_iters: int = 4
-    tier1_rerun_band_pct: float = 1.5
-    max_stalled_rounds: int = 3
-
-    @classmethod
-    def from_env(cls) -> SearchConfig:
-        env_int = lambda name, default: int(os.environ.get(name, str(default)))
-        env_float = lambda name, default: float(os.environ.get(name, str(default)))
-        return cls(
-            max_family_variants=env_int("OPTIMIZE_LORA_MAX_FAMILY_VARIANTS", 6),
-            min_seed_variants=env_int("OPTIMIZE_LORA_MIN_SEED_VARIANTS", 3),
-            max_full_evaluations_per_round=env_int("OPTIMIZE_LORA_MAX_FULL_EVALS_PER_ROUND", 3),
-            max_llm_rounds=env_int("OPTIMIZE_LORA_MAX_LLM_ROUNDS", 6),
-            final_confirmation_candidates=env_int("OPTIMIZE_LORA_FINAL_CONFIRMATION_CANDIDATES", 3),
-            max_close_finalists=env_int("OPTIMIZE_LORA_MAX_CLOSE_FINALISTS", 4),
-            clear_winner_speedup=env_float("OPTIMIZE_LORA_CLEAR_WINNER_SPEEDUP", 1.05),
-            profile_enabled=os.environ.get("OPTIMIZE_LORA_PROFILE_ENABLED", "1") == "1",
-            final_confirm_warmup=env_int("OPTIMIZE_LORA_FINAL_CONFIRM_WARMUP", 2),
-            final_confirm_iters=env_int("OPTIMIZE_LORA_FINAL_CONFIRM_ITERS", 6),
-            tier1_rerun_warmup=env_int("OPTIMIZE_LORA_TIER1_RERUN_WARMUP", 2),
-            tier1_rerun_iters=env_int("OPTIMIZE_LORA_TIER1_RERUN_ITERS", 4),
-            tier1_rerun_band_pct=env_float("OPTIMIZE_LORA_TIER1_RERUN_BAND_PCT", 1.5),
-            max_stalled_rounds=env_int("OPTIMIZE_LORA_MAX_STALLED_ROUNDS", 3),
-        )
-
 @register_workflow(
     name="optimize-lora",
     description="Bootstrap and optimize a LoRA-style CUDA extension.",
@@ -83,11 +44,11 @@ class OptimizeLoraAgent(SearchAgent):
         profiler: CandidateProfiler | None = None,
         config: SearchConfig | None = None,
     ) -> None:
-        config = config or SearchConfig.from_env()
+        config = config or DEFAULT_LORA_SEARCH_CONFIG
         stop_policy = StoppingPolicy(max_stalled_rounds=config.max_stalled_rounds)
         super().__init__(context, stop_policy=stop_policy)
         self.builder = builder or CandidateBuilder(context.workspace)
-        self.harness = harness or OptimizeLoraHarness(HarnessConfig.from_env())
+        self.harness = harness or OptimizeLoraHarness()
         self.profiler = profiler or CandidateProfiler(context.workspace, self.harness.config)
         artifact_path = Path.cwd() / ARTIFACT_NAME
         artifact_path.write_text(BASELINE_SOURCE, encoding="utf-8")

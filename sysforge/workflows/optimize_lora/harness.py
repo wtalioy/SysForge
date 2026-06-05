@@ -1,74 +1,22 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 
 import torch
 
 from ..common import spread_pct
+from .defaults import (
+    DEFAULT_LORA_HARNESS_CONFIG,
+    DEFAULT_RANK,
+    PUBLIC_D_MAX,
+    PUBLIC_D_MIN,
+    LoraHarnessConfig,
+)
 from .models import BenchmarkResult, BenchmarkTierSummary, CandidateEvaluation, ShapeBenchmarkResult
 from .promotion import geometric_mean, summarize_regression_pct
 
 
-PUBLIC_D_MIN = 3584
-PUBLIC_D_MAX = 4608
-DEFAULT_RANK = 16
 REFERENCE_KEY = "__reference__"
-
-
-@dataclass(frozen=True)
-class HarnessConfig:
-    validation_shape: int = 4096
-    rank: int = DEFAULT_RANK
-    seed: int = 0
-    warmup: int = 2
-    iters: int = 5
-    enforce_public_range: bool = True
-    tier1_shapes: tuple[int, ...] = (4096, 4608)
-    tier2_shapes: tuple[int, ...] = (3584, 4096, 4608)
-    tier3_shapes: tuple[int, ...] = (3584, 4096, 4608)
-    screen_warmup: int = 1
-    screen_iters: int = 2
-
-    @classmethod
-    def from_env(cls) -> HarnessConfig:
-        validation_shape = int(os.environ.get("OPTIMIZE_LORA_VALIDATION_SHAPE", "4096"))
-        test_mode = os.environ.get("OPTIMIZE_LORA_TEST_MODE", "") == "1"
-        if test_mode:
-            tier1_shapes = (validation_shape,)
-            tier2_shapes = (validation_shape, validation_shape + 16, validation_shape + 32)
-            tier3_shapes = (validation_shape, validation_shape + 16)
-        else:
-            tier1_shapes = (4096, 4608)
-            tier2_shapes = (3584, 4096, 4608)
-            tier3_shapes = (3584, 4096, 4608)
-        for env_name, attr in (
-            ("OPTIMIZE_LORA_TIER1_SHAPES", "tier1_shapes"),
-            ("OPTIMIZE_LORA_TIER2_SHAPES", "tier2_shapes"),
-            ("OPTIMIZE_LORA_TIER3_SHAPES", "tier3_shapes"),
-        ):
-            raw = os.environ.get(env_name)
-            if raw:
-                parsed = tuple(int(part.strip()) for part in raw.split(",") if part.strip())
-                if attr == "tier1_shapes":
-                    tier1_shapes = parsed
-                elif attr == "tier2_shapes":
-                    tier2_shapes = parsed
-                else:
-                    tier3_shapes = parsed
-        return cls(
-            validation_shape=validation_shape,
-            rank=DEFAULT_RANK,
-            seed=int(os.environ.get("OPTIMIZE_LORA_SEED", "0")),
-            warmup=int(os.environ.get("OPTIMIZE_LORA_BENCH_WARMUP", "2")),
-            iters=int(os.environ.get("OPTIMIZE_LORA_BENCH_ITERS", "5")),
-            enforce_public_range=not test_mode,
-            tier1_shapes=tier1_shapes,
-            tier2_shapes=tier2_shapes,
-            tier3_shapes=tier3_shapes,
-            screen_warmup=int(os.environ.get("OPTIMIZE_LORA_SCREEN_WARMUP", "1")),
-            screen_iters=int(os.environ.get("OPTIMIZE_LORA_SCREEN_ITERS", "2")),
-        )
 
 
 @dataclass(frozen=True)
@@ -158,7 +106,7 @@ def benchmark_forward(
 
 
 class OptimizeLoraHarness:
-    def __init__(self, config: HarnessConfig) -> None:
+    def __init__(self, config: LoraHarnessConfig = DEFAULT_LORA_HARNESS_CONFIG) -> None:
         self.config = config
         self._fixture_cache: dict[tuple[int, int], InputFixture] = {}
         self._reference_output_cache: dict[int, torch.Tensor] = {}
