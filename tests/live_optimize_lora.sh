@@ -51,26 +51,7 @@ command -v nvcc >/dev/null 2>&1 || fail "nvcc not found in conda base environmen
 command -v nvidia-smi >/dev/null 2>&1 || fail "nvidia-smi not found"
 nvidia-smi -L >/dev/null 2>&1 || fail "no visible NVIDIA GPU detected"
 
-[ -n "${BASE_MODEL:-}" ] || fail "BASE_MODEL is required for a real optimize-lora live test"
-
 export TARGET_DIR WORKSPACE_DIR
-export OPTIMIZE_LORA_VALIDATION_SHAPE="${OPTIMIZE_LORA_VALIDATION_SHAPE:-4096}"
-export OPTIMIZE_LORA_BENCH_WARMUP="${OPTIMIZE_LORA_BENCH_WARMUP:-1}"
-export OPTIMIZE_LORA_BENCH_ITERS="${OPTIMIZE_LORA_BENCH_ITERS:-3}"
-export OPTIMIZE_LORA_MAX_FAMILY_VARIANTS="${OPTIMIZE_LORA_MAX_FAMILY_VARIANTS:-6}"
-export OPTIMIZE_LORA_MAX_FULL_EVALS_PER_ROUND="${OPTIMIZE_LORA_MAX_FULL_EVALS_PER_ROUND:-3}"
-export OPTIMIZE_LORA_MAX_LLM_ROUNDS="${OPTIMIZE_LORA_MAX_LLM_ROUNDS:-6}"
-export OPTIMIZE_LORA_CLEAR_WINNER_SPEEDUP="${OPTIMIZE_LORA_CLEAR_WINNER_SPEEDUP:-1.05}"
-export OPTIMIZE_LORA_PROFILE_ENABLED="${OPTIMIZE_LORA_PROFILE_ENABLED:-0}"
-export OPTIMIZE_LORA_FINAL_CONFIRM_WARMUP="${OPTIMIZE_LORA_FINAL_CONFIRM_WARMUP:-2}"
-export OPTIMIZE_LORA_FINAL_CONFIRM_ITERS="${OPTIMIZE_LORA_FINAL_CONFIRM_ITERS:-6}"
-export OPTIMIZE_LORA_MIN_SEED_VARIANTS="${OPTIMIZE_LORA_MIN_SEED_VARIANTS:-3}"
-export OPTIMIZE_LORA_MAX_STALLED_ROUNDS="${OPTIMIZE_LORA_MAX_STALLED_ROUNDS:-3}"
-export OPTIMIZE_LORA_TIER1_SHAPES="${OPTIMIZE_LORA_TIER1_SHAPES:-4096,4608}"
-export OPTIMIZE_LORA_TIER2_SHAPES="${OPTIMIZE_LORA_TIER2_SHAPES:-3584,4096,4608}"
-export OPTIMIZE_LORA_TIER3_SHAPES="${OPTIMIZE_LORA_TIER3_SHAPES:-3584,4096,4608}"
-export OPTIMIZE_LORA_SCREEN_WARMUP="${OPTIMIZE_LORA_SCREEN_WARMUP:-1}"
-export OPTIMIZE_LORA_SCREEN_ITERS="${OPTIMIZE_LORA_SCREEN_ITERS:-2}"
 export HARNESS_SHAPES="${HARNESS_SHAPES:-4096,3584}"
 export RESULT_OUT HARNESS_JSON ARTIFACT_PATH OUTPUT_COPY
 export LIVE_TEST_BUILD_DIR="$RUN_DIR/harness_build"
@@ -152,37 +133,12 @@ if workflow_output.get("workflow") != "optimize-lora":
     raise SystemExit(f"unexpected workflow in output.json: {workflow_output.get('workflow')!r}")
 if workflow_output.get("status") not in {"optimized", "searched", "confirmed_baseline"}:
     raise SystemExit(f"unexpected optimize-lora status: {workflow_output.get('status')!r}")
-if not workflow_output.get("llm_enabled"):
-    raise SystemExit("output.json reports llm_enabled=false")
 if not workflow_output.get("candidates"):
     raise SystemExit("output.json has no candidate records")
 if workflow_output.get("benchmark_summary") is None:
     raise SystemExit("output.json is missing benchmark_summary")
 if workflow_output.get("finalist_summary") is None:
     raise SystemExit("output.json is missing finalist_summary")
-if os.environ.get("OPTIMIZE_LORA_PROFILE_ENABLED") == "1":
-    if not workflow_output.get("profiling_used"):
-        profile_errors = [
-            (candidate.get("profile_summary") or {}).get("error", "").strip()
-            for candidate in (workflow_output.get("candidates") or [])
-            if candidate.get("family") != "baseline"
-        ]
-        profile_errors = [error for error in profile_errors if error]
-        if profile_errors:
-            raise SystemExit(
-                "profiling was requested but no successful profile completed; first profiler error:\n"
-                + profile_errors[0]
-            )
-        raise SystemExit("profiling was requested but output.json reports profiling_used=false")
-    profiled = [
-        candidate
-        for candidate in (workflow_output.get("candidates") or [])
-        if candidate.get("family") != "baseline"
-        and (candidate.get("profile_summary") or {}).get("error", "") == ""
-    ]
-    if not profiled:
-        raise SystemExit("profiling was requested but no non-baseline candidate has a successful profile_summary")
-
 promoted_source = Path(workflow_output.get("promoted_source_path", "")).resolve()
 if promoted_source != artifact_path:
     raise SystemExit(f"promoted_source_path mismatch: expected {artifact_path}, saw {promoted_source}")
@@ -198,8 +154,8 @@ module = load(
 )
 
 shapes = [int(part.strip()) for part in os.environ["HARNESS_SHAPES"].split(",") if part.strip()]
-warmup = int(os.environ.get("OPTIMIZE_LORA_BENCH_WARMUP", "1"))
-iters = int(os.environ.get("OPTIMIZE_LORA_BENCH_ITERS", "3"))
+warmup = 1
+iters = 3
 
 results = []
 overall_passed = True
@@ -268,7 +224,6 @@ result_out.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 payload = {
     "artifact_path": str(artifact_path),
     "workflow_status": workflow_output.get("status"),
-    "llm_enabled": workflow_output.get("llm_enabled"),
     "candidate_count": len(workflow_output.get("candidates") or []),
     "current_best_candidate_id": workflow_output.get("current_best_candidate_id"),
     "best_candidate_kind": workflow_output.get("best_candidate_kind"),

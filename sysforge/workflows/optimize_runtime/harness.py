@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..common import CommandResult, tail_text
-from .benchmark import aggregate_benchmark_summaries, benchmark_case_names, parse_benchmark_file, run_benchmark
-from .correctness import run_correctness_case
+from .benchmark import BENCHMARK_CASE_NAMES, aggregate_benchmark_summaries, parse_benchmark_file, run_benchmark
+from .correctness import run_correctness_check
 from .defaults import DEFAULT_RUNTIME_WORKFLOW_CONFIG, RuntimeWorkflowConfig
 from .models import RuntimeBenchmarkSummary
 from .runtime_io import write_json_file
@@ -31,14 +31,13 @@ class OptimizeRuntimeHarness:
         self.logs_dir = logs_dir
         self.logs_dir.mkdir(parents=True, exist_ok=True)
 
-    def run_correctness(self, engine_path: Path, *, label: str, case: str = "basic") -> RuntimeHarnessResult:
+    def check_correctness(self, engine_path: Path, *, label: str) -> RuntimeHarnessResult:
         return self._run_and_log(
-            label=f"{label}_{case}_correctness",
-            fn=lambda: run_correctness_case(
+            label=f"{label}_correctness",
+            fn=lambda: run_correctness_check(
                 engine_path=str(engine_path),
                 model_config_path=str(self.model_config_path),
                 weight_dir=str(self.weight_dir),
-                case=case,
                 device=self.config.device,
             ),
         )
@@ -62,7 +61,7 @@ class OptimizeRuntimeHarness:
             try:
                 parsed_runs.append(parse_benchmark_file(
                     output_json,
-                    required_cases=set(benchmark_case_names(self.config.benchmark_case_mode)),
+                    required_cases=set(BENCHMARK_CASE_NAMES),
                 ))
             except ValueError as exc:
                 result.status = "failed"
@@ -81,7 +80,6 @@ class OptimizeRuntimeHarness:
             device=self.config.device,
             warmup=self.config.benchmark_warmup,
             repeat=self.config.benchmark_repeat,
-            case_mode=self.config.benchmark_case_mode,
         )
         write_json_file(output_json, payload)
         return payload

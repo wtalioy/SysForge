@@ -42,7 +42,6 @@ print(json.dumps(run_public_checks(
     model_config_path=os.path.join(os.environ["TARGET_DIR"], "model_config.json"),
     weight_dir=os.path.join(os.environ["TARGET_DIR"], "weights"),
     device="auto",
-    case_mode="robust",
     warmup=2,
     repeat=3,
     benchmark_output_path=os.environ["BENCHMARK_JSON"],
@@ -54,7 +53,7 @@ grep -qi "kv-cache" results.log
 grep -qi "LLM" results.log
 grep -qi "correctness" results.log
 grep -qi "benchmark" results.log
-grep -qi "promoted engine final correctness smoke passed" results.log
+grep -qi "promoted engine final correctness check passed" results.log
 grep -qi "promoted engine final benchmark passed" results.log
 cp results.log "$RESULTS_COPY"
 if [ -f "$WORKSPACE_DIR/output.json" ]; then

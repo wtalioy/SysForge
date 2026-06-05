@@ -28,7 +28,7 @@ def choose_winner(
     noise_guard: float = 0.01,
     robust_regression_guard: float = 0.10,
 ) -> RuntimeCandidateRecord | None:
-    eligible = [candidate for candidate in candidates if candidate.correctness_passed and candidate.stress_passed]
+    eligible = [candidate for candidate in candidates if candidate.correctness_passed and candidate.benchmark is not None]
     if not eligible:
         return None
     incumbent = next((candidate for candidate in eligible if candidate.candidate_id == incumbent_id), None)

@@ -12,9 +12,7 @@ class RuntimeWorkflowConfig:
     benchmark_repeat: int = 5
     benchmark_runs: int = 3
     benchmark_discard_runs: int = 1
-    run_stress: bool = True
-    run_benchmark: bool = True
-    max_llm_rounds: int = 2
+    max_llm_rounds: int = 4
     max_llm_strategies_per_round: int = 2
 
 

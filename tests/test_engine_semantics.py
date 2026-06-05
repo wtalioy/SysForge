@@ -4,9 +4,9 @@ import pytest
 import torch
 
 from sysforge.workflows.optimize_runtime.correctness import (
-    build_stress_events,
+    build_correctness_events,
     compare_engine_with_reference,
-    run_correctness_case,
+    run_correctness_check,
 )
 from sysforge.workflows.optimize_runtime.models import EngineStrategy
 from sysforge.workflows.optimize_runtime.renderer import write_engine
@@ -74,7 +74,7 @@ def test_rendered_kv_cache_engine_matches_reference_on_gqa(tmp_path):
         engine_path=str(engine_path),
         model_config=config,
         weight_dir=str(weight_dir),
-        events=build_stress_events(config["vocab_size"], device),
+        events=build_correctness_events(config["vocab_size"], device),
         device=device,
     )
 
@@ -95,7 +95,7 @@ def test_rendered_recompute_engine_matches_reference(tmp_path):
         engine_path=str(engine_path),
         model_config=config,
         weight_dir=str(weight_dir),
-        events=build_stress_events(config["vocab_size"], device),
+        events=build_correctness_events(config["vocab_size"], device),
         device=device,
     )
 
@@ -120,7 +120,7 @@ def test_rendered_pad_batch_engine_matches_reference_on_mixed_lengths(tmp_path):
         engine_path=str(engine_path),
         model_config=config,
         weight_dir=str(weight_dir),
-        events=build_stress_events(config["vocab_size"], device),
+        events=build_correctness_events(config["vocab_size"], device),
         device=device,
     )
 
@@ -149,7 +149,7 @@ def test_rendered_advanced_search_strategy_matches_reference(tmp_path):
         engine_path=str(engine_path),
         model_config=config,
         weight_dir=str(weight_dir),
-        events=build_stress_events(config["vocab_size"], device),
+        events=build_correctness_events(config["vocab_size"], device),
         device=device,
     )
 
@@ -177,15 +177,14 @@ def test_rendered_engine_rejects_duplicate_request_ids(tmp_path):
         engine.decode([1, 1], torch.randint(0, config["vocab_size"], (2,), device=device))
 
 
-def test_external_engine_public_stress():
+def test_external_engine_correctness():
     engine_path = os.environ.get("ENGINE_UNDER_TEST")
     if not engine_path:
         pytest.skip("ENGINE_UNDER_TEST is not set")
-    result = run_correctness_case(
+    result = run_correctness_check(
         engine_path=engine_path,
         model_config_path="target/model_config.json",
         weight_dir="target/weights",
-        case="stress",
         device=os.environ.get("ENGINE_SEMANTICS_DEVICE", "auto"),
     )
     assert result["status"] == "passed"

@@ -27,9 +27,9 @@ def select_last_logits(ref_model: ReferenceModel, input_ids: torch.Tensor) -> to
     return ref_model.forward(input_ids.unsqueeze(0))[0, -1, :]
 
 
-def build_basic_events(vocab_size: int, device: str) -> list[dict]:
+def build_correctness_events(vocab_size: int, device: str) -> list[dict]:
     torch.manual_seed(7)
-    return [
+    events = [
         prefill_event([0], [random_token_ids(vocab_size, 11, device)], name="single_prefill"),
         decode_event([0], random_token_ids(vocab_size, 1, device), name="single_decode"),
         prefill_event(
@@ -44,10 +44,8 @@ def build_basic_events(vocab_size: int, device: str) -> list[dict]:
         remove_event([0, 2, 3]),
     ]
 
-
-def build_stress_events(vocab_size: int, device: str) -> list[dict]:
     torch.manual_seed(17)
-    return [
+    events.extend([
         prefill_event(
             [101, 7, 42],
             [
@@ -67,7 +65,8 @@ def build_stress_events(vocab_size: int, device: str) -> list[dict]:
         prefill_event([42], [random_token_ids(vocab_size, 4, device)], name="replacement_prefill"),
         remove_event([7, 999]),
         decode_event([42, 101], random_token_ids(vocab_size, 2, device), name="decode_after_remove"),
-    ]
+    ])
+    return events
 
 
 def compare_engine_with_reference(
@@ -113,24 +112,18 @@ def compare_engine_with_reference(
                 raise ValueError(f"unknown correctness op: {event['op']}")
 
 
-def run_correctness_case(
+def run_correctness_check(
     *,
     engine_path: str,
     model_config_path: str,
     weight_dir: str,
-    case: str,
     device: str = "auto",
     atol: float = 1e-2,
     rtol: float = 1e-2,
 ) -> dict[str, object]:
     device = resolve_device(device)
     model_config = read_json_file(model_config_path)
-    if case == "basic":
-        events = build_basic_events(int(model_config["vocab_size"]), device)
-    elif case == "stress":
-        events = build_stress_events(int(model_config["vocab_size"]), device)
-    else:
-        raise ValueError(f"unknown correctness case: {case}")
+    events = build_correctness_events(int(model_config["vocab_size"]), device)
     compare_engine_with_reference(
         engine_path=engine_path,
         model_config=model_config,
@@ -145,7 +138,6 @@ def run_correctness_case(
         "engine": engine_path,
         "model_config": model_config_path,
         "device": device,
-        "case": case,
         "atol": atol,
         "rtol": rtol,
     }

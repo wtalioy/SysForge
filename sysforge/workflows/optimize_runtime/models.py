@@ -89,7 +89,6 @@ class RuntimeCandidateRecord:
     source_hash: str
     origin: str = "seed"
     correctness_passed: bool = False
-    stress_passed: bool = False
     benchmark: RuntimeBenchmarkSummary | None = None
     failure_stage: str = ""
     failure_summary: str = ""
@@ -104,7 +103,6 @@ class RuntimeOptimizationResult(WorkflowResult):
     promoted_engine_path: str
     artifact_created: bool
     correctness_passed: bool = False
-    stress_passed: bool = False
     benchmark_summary: RuntimeBenchmarkSummary | None = None
     candidates: list[RuntimeCandidateRecord] = field(default_factory=list)
     strategy_rounds: list[dict[str, Any]] = field(default_factory=list)

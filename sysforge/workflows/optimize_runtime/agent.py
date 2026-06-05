@@ -59,10 +59,9 @@ class OptimizeRuntimeAgent(BaseAgent):
         self.log(
             "starting optimize-runtime "
             f"(device={self.harness.config.device}, "
-            f"benchmark={self.harness.config.run_benchmark}, stress={self.harness.config.run_stress}, "
             f"benchmark_runs={self.harness.config.benchmark_runs}, "
             f"benchmark_discard_runs={self.harness.config.benchmark_discard_runs}, "
-            f"case_mode={self.harness.config.benchmark_case_mode}, llm_rounds={self.max_llm_rounds})"
+            f"llm_rounds={self.max_llm_rounds})"
         )
         try:
             self._prepare_public_weights_if_needed()
@@ -73,7 +72,7 @@ class OptimizeRuntimeAgent(BaseAgent):
             winner = choose_winner(candidates)
             if winner is None:
                 self.result.status = "failed"
-                self.result.summary = "No candidate passed correctness and stress gates."
+                self.result.summary = "No candidate passed correctness and benchmark gates."
                 self.log("no promotable candidate found")
             else:
                 promote_candidate(winner, self.submission_root / "engine.py")
@@ -81,37 +80,35 @@ class OptimizeRuntimeAgent(BaseAgent):
                 self.result.summary = f"Promoted {winner.candidate_id}."
                 self.result.artifact_created = (self.submission_root / "engine.py").exists()
                 self.result.correctness_passed = winner.correctness_passed
-                self.result.stress_passed = winner.stress_passed
                 self.result.benchmark_summary = winner.benchmark
                 self.log(f"promoted candidate {winner.candidate_id} to engine.py")
-                smoke = self.harness.run_correctness(self.submission_root / "engine.py", label="promoted")
+                smoke = self.harness.check_correctness(self.submission_root / "engine.py", label="promoted")
                 if not smoke.passed:
                     self.result.status = "failed"
-                    self.result.summary = f"Promoted candidate failed final correctness smoke: {smoke.failure_summary}"
+                    self.result.summary = f"Promoted candidate failed final correctness check: {smoke.failure_summary}"
                     self.result.errors.append(self.result.summary)
                 else:
-                    self.log("promoted engine final correctness smoke passed")
-                    if self.harness.config.run_benchmark:
-                        final_benchmark = self.harness.run_benchmark_suite(
-                            self.submission_root / "engine.py",
-                            label="promoted",
+                    self.log("promoted engine final correctness check passed")
+                    final_benchmark = self.harness.run_benchmark_suite(
+                        self.submission_root / "engine.py",
+                        label="promoted",
+                    )
+                    if final_benchmark.passed and final_benchmark.benchmark is not None:
+                        self.result.benchmark_summary = final_benchmark.benchmark
+                        self.result.notes.append("Promoted engine final benchmark passed.")
+                        self.log(
+                            "promoted engine final benchmark passed "
+                            f"(mixed={final_benchmark.benchmark.mixed_tokens_per_second:.2f}, "
+                            f"decode={final_benchmark.benchmark.decode_tokens_per_second:.2f}, "
+                            f"mixed_spread={final_benchmark.benchmark.spread_pct.get('mixed', 0.0):.2f}%, "
+                            f"churn={final_benchmark.benchmark.case_tokens_per_second.get('churn', 0.0):.2f}, "
+                            f"varied_prefill="
+                            f"{final_benchmark.benchmark.case_tokens_per_second.get('varied_prefill', 0.0):.2f})"
                         )
-                        if final_benchmark.passed and final_benchmark.benchmark is not None:
-                            self.result.benchmark_summary = final_benchmark.benchmark
-                            self.result.notes.append("Promoted engine final benchmark smoke passed.")
-                            self.log(
-                                "promoted engine final benchmark passed "
-                                f"(mixed={final_benchmark.benchmark.mixed_tokens_per_second:.2f}, "
-                                f"decode={final_benchmark.benchmark.decode_tokens_per_second:.2f}, "
-                                f"mixed_spread={final_benchmark.benchmark.spread_pct.get('mixed', 0.0):.2f}%, "
-                                f"churn={final_benchmark.benchmark.case_tokens_per_second.get('churn', 0.0):.2f}, "
-                                f"varied_prefill="
-                                f"{final_benchmark.benchmark.case_tokens_per_second.get('varied_prefill', 0.0):.2f})"
-                            )
-                        else:
-                            self.result.notes.append(
-                                f"Promoted engine final benchmark smoke failed: {final_benchmark.failure_summary}"
-                            )
+                    else:
+                        self.result.status = "failed"
+                        self.result.summary = f"Promoted candidate failed final benchmark: {final_benchmark.failure_summary}"
+                        self.result.errors.append(self.result.summary)
         except Exception as exc:  # noqa: BLE001
             append_workflow_error(self.result, "optimize-runtime failed", exc)
             self.result.status = "failed"
@@ -187,7 +184,7 @@ class OptimizeRuntimeAgent(BaseAgent):
     def _evaluate_candidate(self, candidate: RuntimeCandidateRecord) -> None:
         engine_path = Path(candidate.engine_path)
         self.log(f"correctness gate: {candidate.candidate_id}")
-        correctness = self.harness.run_correctness(engine_path, label=candidate.candidate_id)
+        correctness = self.harness.check_correctness(engine_path, label=candidate.candidate_id)
         candidate.correctness_passed = correctness.passed
         if not correctness.passed:
             candidate.failure_stage = "correctness"
@@ -195,43 +192,27 @@ class OptimizeRuntimeAgent(BaseAgent):
             self.log(f"correctness failed: {candidate.candidate_id}: {correctness.failure_summary}")
             return
         self.log(f"correctness passed: {candidate.candidate_id}")
-        if self.harness.config.run_stress:
-            self.log(f"stress correctness gate: {candidate.candidate_id}")
-            stress = self.harness.run_correctness(engine_path, label=candidate.candidate_id, case="stress")
-            candidate.stress_passed = stress.passed
-            if not stress.passed:
-                candidate.failure_stage = "stress"
-                candidate.failure_summary = stress.failure_summary
-                self.log(f"stress failed: {candidate.candidate_id}: {stress.failure_summary}")
-                return
-            self.log(f"stress passed: {candidate.candidate_id}")
-        else:
-            candidate.stress_passed = True
-        if self.harness.config.run_benchmark:
-            if candidate.origin == "bootstrap":
-                self.log(f"benchmark skipped for bootstrap candidate: {candidate.candidate_id}")
-                return
-            self.log(f"benchmark: {candidate.candidate_id}")
-            benchmark = self.harness.run_benchmark_suite(engine_path, label=candidate.candidate_id)
-            if not benchmark.passed or benchmark.benchmark is None:
-                candidate.failure_stage = "benchmark"
-                candidate.failure_summary = benchmark.failure_summary
-                self.log(f"benchmark failed: {candidate.candidate_id}: {benchmark.failure_summary}")
-                return
-            candidate.benchmark = benchmark.benchmark
-            self.log(
-                "benchmark passed: "
-                f"{candidate.candidate_id} "
-                f"prefill={benchmark.benchmark.prefill_tokens_per_second:.2f} "
-                f"decode={benchmark.benchmark.decode_tokens_per_second:.2f} "
-                f"mixed={benchmark.benchmark.mixed_tokens_per_second:.2f} "
-                f"runs={benchmark.benchmark.run_count} "
-                f"mixed_spread={benchmark.benchmark.spread_pct.get('mixed', 0.0):.2f}% "
-                f"decode_spread={benchmark.benchmark.spread_pct.get('decode', 0.0):.2f}% "
-                f"churn={benchmark.benchmark.case_tokens_per_second.get('churn', 0.0):.2f} "
-                f"long_decode={benchmark.benchmark.case_decode_tokens_per_second.get('long_decode', 0.0):.2f} "
-                f"varied_prefill={benchmark.benchmark.case_tokens_per_second.get('varied_prefill', 0.0):.2f}"
-            )
+        self.log(f"benchmark: {candidate.candidate_id}")
+        benchmark = self.harness.run_benchmark_suite(engine_path, label=candidate.candidate_id)
+        if not benchmark.passed or benchmark.benchmark is None:
+            candidate.failure_stage = "benchmark"
+            candidate.failure_summary = benchmark.failure_summary
+            self.log(f"benchmark failed: {candidate.candidate_id}: {benchmark.failure_summary}")
+            return
+        candidate.benchmark = benchmark.benchmark
+        self.log(
+            "benchmark passed: "
+            f"{candidate.candidate_id} "
+            f"prefill={benchmark.benchmark.prefill_tokens_per_second:.2f} "
+            f"decode={benchmark.benchmark.decode_tokens_per_second:.2f} "
+            f"mixed={benchmark.benchmark.mixed_tokens_per_second:.2f} "
+            f"runs={benchmark.benchmark.run_count} "
+            f"mixed_spread={benchmark.benchmark.spread_pct.get('mixed', 0.0):.2f}% "
+            f"decode_spread={benchmark.benchmark.spread_pct.get('decode', 0.0):.2f}% "
+            f"churn={benchmark.benchmark.case_tokens_per_second.get('churn', 0.0):.2f} "
+            f"long_decode={benchmark.benchmark.case_decode_tokens_per_second.get('long_decode', 0.0):.2f} "
+            f"varied_prefill={benchmark.benchmark.case_tokens_per_second.get('varied_prefill', 0.0):.2f}"
+        )
 
     def _run_llm_strategy_search(self, candidates: list[RuntimeCandidateRecord]) -> None:
         for round_index in range(1, max(0, self.max_llm_rounds) + 1):
@@ -400,7 +381,7 @@ class OptimizeRuntimeAgent(BaseAgent):
             "candidate_id": candidate.candidate_id,
             "origin": candidate.origin,
             "strategy": candidate.strategy.to_dict(),
-            "passed": candidate.correctness_passed and candidate.stress_passed,
+            "passed": candidate.correctness_passed and candidate.benchmark is not None,
             "metrics": metrics,
             "failure_stage": candidate.failure_stage,
             "failure_summary": candidate.failure_summary[:1000],

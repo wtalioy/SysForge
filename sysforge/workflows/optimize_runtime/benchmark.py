@@ -15,6 +15,7 @@ from .runtime_io import load_engine_module, read_json_file, resolve_device
 
 PUBLIC_CASE_NAMES = ("prefill", "decode", "mixed")
 ROBUST_CASE_NAMES = ("varied_prefill", "long_decode", "churn")
+BENCHMARK_CASE_NAMES = (*PUBLIC_CASE_NAMES, *ROBUST_CASE_NAMES)
 
 
 @dataclass
@@ -216,7 +217,7 @@ def _run_benchmark_case(case_name, engine_module, model_config, weight_dir, even
     )
 
 
-def _build_benchmark_cases(case_mode: str, vocab_size: int, device: str):
+def _build_benchmark_cases(vocab_size: int, device: str):
     builders = {
         "prefill": lambda: _build_prefill_events(batch_size=4, prompt_len=128, vocab_size=vocab_size, device=device),
         "decode": lambda: _build_decode_events(
@@ -237,13 +238,7 @@ def _build_benchmark_cases(case_mode: str, vocab_size: int, device: str):
         ),
         "churn": lambda: _build_churn_events(vocab_size=vocab_size, device=device),
     }
-    return {case_name: builders[case_name]() for case_name in benchmark_case_names(case_mode)}
-
-
-def benchmark_case_names(case_mode: str) -> tuple[str, ...]:
-    if case_mode == "robust":
-        return (*PUBLIC_CASE_NAMES, *ROBUST_CASE_NAMES)
-    return PUBLIC_CASE_NAMES
+    return {case_name: builders[case_name]() for case_name in BENCHMARK_CASE_NAMES}
 
 
 def run_benchmark(
@@ -254,7 +249,6 @@ def run_benchmark(
     device: str = "auto",
     warmup: int = 1,
     repeat: int = 3,
-    case_mode: str = "public",
 ) -> list[dict[str, object]]:
     device = resolve_device(device)
     torch.manual_seed(0)
@@ -263,7 +257,7 @@ def run_benchmark(
 
     vocab_size = int(model_config["vocab_size"])
     engine_module = load_engine_module(engine_path)
-    cases = _build_benchmark_cases(case_mode, vocab_size, device)
+    cases = _build_benchmark_cases(vocab_size, device)
     return [
         asdict(
             _run_benchmark_case(
@@ -292,14 +286,14 @@ def parse_benchmark_file(path: Path, *, required_cases: set[str] | None = None) 
 def parse_benchmark_payload(payload: Any, *, required_cases: set[str] | None = None) -> RuntimeBenchmarkSummary:
     if not isinstance(payload, list):
         raise ValueError("benchmark JSON payload was not a list")
-    required_cases = required_cases or set(PUBLIC_CASE_NAMES)
     by_case: dict[str, dict[str, Any]] = {str(item.get("case_name")): item for item in payload}
+    if len(by_case) != len(payload):
+        raise ValueError("benchmark JSON payload contains duplicate case names")
+    required_cases = required_cases or set(BENCHMARK_CASE_NAMES)
     if not required_cases.issubset(set(by_case)):
         missing = ", ".join(sorted(required_cases - set(by_case)))
         extra = ", ".join(sorted(set(by_case) - required_cases))
         raise ValueError(f"benchmark cases mismatch; missing={missing or 'none'} extra={extra or 'none'}")
-    if len(by_case) != len(payload):
-        raise ValueError("benchmark JSON payload contains duplicate case names")
 
     def metric(case_name: str, key: str) -> float:
         value = by_case.get(case_name, {}).get(key, 0.0)
