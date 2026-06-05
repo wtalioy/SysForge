@@ -64,7 +64,6 @@ class OptimizeRuntimeAgent(BaseAgent):
             f"llm_rounds={self.max_llm_rounds})"
         )
         try:
-            self._prepare_public_weights_if_needed()
             candidates = self._initial_candidates()
             self._write_initial_engine(candidates)
             self._evaluate_candidates(candidates)
@@ -119,22 +118,6 @@ class OptimizeRuntimeAgent(BaseAgent):
         self.result.finished_at = workflow_timestamp()
         self.log(f"finished optimize-runtime (status={self.result.status})")
         return self.result
-
-    def _prepare_public_weights_if_needed(self) -> None:
-        config_path = self.harness.model_config_path
-        weight_path = self.harness.weight_dir / "model.pt"
-        if weight_path.exists() or not config_path.exists():
-            return
-        self.log("preparation: generating missing toy weights")
-        command = [
-            sys.executable,
-            str(self.submission_root / "scripts" / "generate_toy_weights.py"),
-            "--config",
-            str(config_path),
-            "--output",
-            str(weight_path),
-        ]
-        subprocess.run(command, cwd=self.submission_root, check=True)
 
     def _initial_candidates(self) -> list[RuntimeCandidateRecord]:
         return [
