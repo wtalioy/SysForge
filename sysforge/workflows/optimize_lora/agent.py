@@ -7,10 +7,9 @@ from pathlib import Path
 from typing import Callable
 import torch
 from ...agent import SearchAgent, StoppingPolicy
-from ...agent.llm import has_llm_config
 from ...runtime import RuntimeContext
 from ..artifacts import source_digest
-from ..common import workflow_timestamp
+from ..common import append_workflow_error, workflow_timestamp
 from ..registry import register_workflow
 from .prompting import revise_candidate_family, generate_candidate_family
 from .build import CandidateBuilder
@@ -103,11 +102,6 @@ class OptimizeLoraAgent(SearchAgent):
             artifact_created=artifact_path.exists(),
             bootstrap_family="baseline",
             validation_shape=self.harness.config.validation_shape,
-            llm_enabled=has_llm_config(
-                api_key=context.config.api_key,
-                base_url=context.config.base_url,
-                model=context.config.base_model,
-            ),
             notes=[
                 "Bootstrap artifact is written before validation begins.",
                 "The optimize-lora search space is authored by the LLM as parameterized candidate families.",
@@ -124,29 +118,26 @@ class OptimizeLoraAgent(SearchAgent):
     def run(self) -> OptimizeLoraResult:
         self.log(
             "starting optimize-lora "
-            f"(llm_enabled={self.result.llm_enabled}, "
-            f"validation_shape={self.harness.config.validation_shape}, "
+            f"(validation_shape={self.harness.config.validation_shape}, "
             f"tier1_shapes={list(self.harness.config.tier1_shapes)}, "
             f"tier2_shapes={list(self.harness.config.tier2_shapes)}, "
             f"tier3_shapes={list(self.harness.config.tier3_shapes)})"
         )
-        self.bootstrap_baseline()
-        if self.result.llm_enabled:
+        try:
+            self.bootstrap_baseline()
             self.run_family_search()
-        else:
-            self.log("llm search unavailable; keeping validated baseline only")
-            self.record_trace(action="family_search_skipped", reason="llm_disabled")
-        self.log("running final confirmation for top candidates")
-        self._round_evaluator.finalize_winner()
-        if self.result.winner_confirmed and self.result.best_candidate_kind == "optimized":
-            self.result.status = "optimized"
-            self.result.summary = "Confirmed a non-baseline optimized candidate after LLM-authored family search."
-        elif self.result.llm_enabled:
-            self.result.status = "searched"
-            self.result.summary = "Completed LLM-authored family search and kept the strongest verified artifact."
-        else:
-            self.result.status = "confirmed_baseline"
-            self.result.summary = "Validated the bootstrap baseline because the LLM search loop was unavailable."
+            self.log("running final confirmation for top candidates")
+            self._round_evaluator.finalize_winner()
+            if self.result.winner_confirmed and self.result.best_candidate_kind == "optimized":
+                self.result.status = "optimized"
+                self.result.summary = "Confirmed a non-baseline optimized candidate after LLM-authored family search."
+            else:
+                self.result.status = "searched"
+                self.result.summary = "Completed LLM-authored family search and kept the strongest verified artifact."
+        except Exception as exc:  # noqa: BLE001
+            append_workflow_error(self.result, "optimize-lora failed", exc)
+            self.result.status = "failed"
+            self.result.summary = str(exc)
         self.log(
             "finished optimize-lora "
             f"(status={self.result.status}, winner={self.result.current_best_candidate_id or 'none'}, "
@@ -272,17 +263,11 @@ class OptimizeLoraAgent(SearchAgent):
 
     def run_family_search(self) -> None:
         self.log("requesting initial candidate family from LLM")
-        try:
-            family = generate_candidate_family(
-                baseline_source=self._incumbent_forward_body(),
-                min_distinct_variants=self.config.min_seed_variants,
-                **self._family_prompt_context(),
-            )
-        except Exception as exc:  # noqa: BLE001
-            self.result.errors.append(f"generate_candidate_family failed: {exc}")
-            self.log(f"initial family generation failed: {exc}")
-            self.record_trace(action="family_generation_failed", error=str(exc))
-            return
+        family = generate_candidate_family(
+            baseline_source=self._incumbent_forward_body(),
+            min_distinct_variants=self.config.min_seed_variants,
+            **self._family_prompt_context(),
+        )
         for _ in range(self.config.max_llm_rounds):
             round_index = self.begin_round(family.family_name)
             planned_variants = len(expand_family_mappings(family))

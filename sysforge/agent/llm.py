@@ -49,15 +49,6 @@ def is_temperature_unsupported(exc: Exception) -> bool:
     )
 
 
-def has_llm_config(*, api_key: str | None = None, base_url: str | None = None, model: str | None = None) -> bool:
-    model = (model if model is not None else os.environ.get("BASE_MODEL", "")).strip()
-    api_key = (api_key if api_key is not None else os.environ.get("API_KEY", "")).strip()
-    base_url = (base_url if base_url is not None else os.environ.get("BASE_URL", "")).strip()
-    if not model:
-        return False
-    return bool(api_key or base_url)
-
-
 def resolve_api_key(*, api_key: str | None = None, base_url: str | None = None) -> str:
     api_key = (api_key if api_key is not None else os.environ.get("API_KEY", "")).strip()
     base_url = (base_url if base_url is not None else os.environ.get("BASE_URL", "")).strip()

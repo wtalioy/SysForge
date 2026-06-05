@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 
 from ...agent import BaseAgent
-from ...agent.llm import has_llm_config
 from ...runtime import RuntimeContext
 from ..artifacts import source_digest
 from ..common import append_workflow_error, workflow_timestamp
@@ -49,11 +48,6 @@ class OptimizeRuntimeAgent(BaseAgent):
             submission_root=str(self.submission_root),
             promoted_engine_path=str(self.submission_root / "engine.py"),
             artifact_created=False,
-            llm_enabled=has_llm_config(
-                api_key=context.config.api_key,
-                base_url=context.config.base_url,
-                model=context.config.base_model,
-            ),
             notes=[
                 "Candidates are rendered from a fixed correctness-first engine template.",
                 "LLM strategy search proposes schema-validated strategy JSON only.",
@@ -63,7 +57,7 @@ class OptimizeRuntimeAgent(BaseAgent):
     def run(self) -> RuntimeOptimizationResult:
         self.log(
             "starting optimize-runtime "
-            f"(llm_enabled={self.result.llm_enabled}, device={self.harness.config.device}, "
+            f"(device={self.harness.config.device}, "
             f"benchmark={self.harness.config.run_benchmark}, stress={self.harness.config.run_stress}, "
             f"benchmark_runs={self.harness.config.benchmark_runs}, "
             f"benchmark_discard_runs={self.harness.config.benchmark_discard_runs}, "
@@ -74,11 +68,7 @@ class OptimizeRuntimeAgent(BaseAgent):
             candidates = self._initial_candidates()
             self._write_initial_engine(candidates)
             self._evaluate_candidates(candidates)
-            if self.result.llm_enabled:
-                self._run_llm_strategy_search(candidates)
-            else:
-                self.log("LLM strategy round skipped because LLM config is unavailable")
-                self.record_trace(action="llm_strategy_round_skipped", reason="llm_disabled")
+            self._run_llm_strategy_search(candidates)
             winner = choose_winner(candidates)
             if winner is None:
                 self.result.status = "failed"

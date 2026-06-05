@@ -109,5 +109,4 @@ class RuntimeOptimizationResult(WorkflowResult):
     candidates: list[RuntimeCandidateRecord] = field(default_factory=list)
     strategy_rounds: list[dict[str, Any]] = field(default_factory=list)
     controller_trace: list[dict[str, Any]] = field(default_factory=list)
-    llm_enabled: bool = False
     notes: list[str] = field(default_factory=list)

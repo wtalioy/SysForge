@@ -8,7 +8,6 @@ from sysforge.agent.llm import (
     chat_text,
     extract_fenced_block,
     extract_json_object,
-    has_llm_config,
     is_transient,
     resolve_api_key,
 )
@@ -127,11 +126,7 @@ def test_chat_text_retries_without_temperature_when_backend_rejects_it(monkeypat
     assert "temperature" not in calls[1]
 
 
-def test_llm_configuration_helpers_accept_local_backends_without_api_keys():
-    assert has_llm_config(api_key="", base_url="http://127.0.0.1:8000/v1", model="stub-model") is True
-    assert has_llm_config(api_key="", base_url="", model="stub-model") is False
-    assert has_llm_config(api_key="stub", base_url="", model="stub-model") is True
-    assert has_llm_config(api_key="", base_url="http://127.0.0.1:8000/v1", model="") is False
+def test_resolve_api_key_accepts_local_backends_without_api_keys():
     assert resolve_api_key(api_key="", base_url="http://127.0.0.1:8000/v1") == "dummy"
 
 

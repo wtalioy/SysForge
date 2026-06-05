@@ -195,5 +195,4 @@ class OptimizeLoraResult(WorkflowResult):
     skipped_steps: list[dict] = field(default_factory=list)
     candidates: list[CandidateRecord] = field(default_factory=list)
     controller_trace: list[dict] = field(default_factory=list)
-    llm_enabled: bool = False
     notes: list[str] = field(default_factory=list)
